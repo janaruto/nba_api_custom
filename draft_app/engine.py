@@ -349,7 +349,7 @@ def _init_team(pr: Problem, alpha: float, rng=None):
         pool = ok if len(ok) else cands[np.argsort(pr.price[cands])][:1]
         score = val[pool] / np.maximum(pr.price[pool], 1.0) ** alpha
         pick = int(pool[np.argmax(score)])
-        team.append(pick); spent += int(pr.price[pick]); ncen += int(m.isC[pick])
+        team.append(pick); spent += float(pr.price[pick]); ncen += int(m.isC[pick])
     return team
 
 
@@ -389,9 +389,9 @@ def _local_search(pr: Problem, team, lam: float, max_iter: int = 60):
     return team
 
 
-def _cost(pr: Problem, team) -> int:
+def _cost(pr: Problem, team) -> float:
     """Money still to be spent: only the free (not yet bought) starters cost anything."""
-    return int(sum(pr.price[i] for i in team[len(pr.fixed):]))
+    return float(sum(pr.price[i] for i in team[len(pr.fixed):]))
 
 
 def solve(pr: Problem, restarts=(0.0, 0.6, 1.0)):
@@ -433,6 +433,123 @@ def solve(pr: Problem, restarts=(0.0, 0.6, 1.0)):
         if best is None or f > best[1]:
             best = (cand, f, lam_used)
     return best
+
+
+def bench_suggestions(model: PoolModel, fld: Field, team, available, price, n_bench: int = 3,
+                      fixed_centers_off_lineup: int = 0, max_price: float | None = None, top_k: int = 10,
+                      overlap: float = 0.5):
+    """Who to draft for the bench once the starting ten is (planned) settled.
+
+    A bench player earns his keep when a starter is missing. With no IR and a weekly lineup lock, an absent starter
+    leaves a hole for the whole week unless somebody fills in. For every starter s (weight W_s = 1 - availability, the
+    share of the time he is out) we compare the matchup win probability of the lineup WITHOUT s against the lineup with
+    candidate c in s's place (positions and the centre cap must allow it). The candidate's score is
+        sum_s  W_s * [ p_win(team - s + c) - p_win(team - s) ] .
+    The first `n_bench` picks are chosen greedily so that they cover different starters. With about three starters
+    missing at any moment the bench players are mostly busy at the same time, so a later pick is only discounted by
+    `overlap` (0.5 = what the picks before him already cover counts half): he is worth what he adds beyond that. Centres
+    on the bench count against the roster cap. It is a first-order estimate: it ranks candidates, the absolute numbers
+    are rough.
+
+    Returns up to `top_k` dicts: idx, rank (1..n_bench for the greedy picks, else None), value (in win-probability
+    points, 0.01 = one point), marginal (extra value given the picks before him), covers (starter pool indices he helps
+    most). Players already in `team` are never suggested.
+    """
+    m = model
+    team = [int(i) for i in team]
+    if not team or n_bench <= 0:
+        return []
+    avail = np.asarray(available, bool).copy()
+    avail[team] = False
+    cand = np.flatnonzero(avail)
+    if max_price is not None:
+        cand = cand[np.asarray(price, float)[cand] <= max_price + 1e-9]
+    if len(cand) == 0:
+        return []
+    SE, SV, SD = m.E[team].sum(0), m.V[team].sum(0), m.D[team].sum(0)
+    W = np.clip(1.0 - m.avail[team], 0.0, 1.0)
+    G = np.zeros((len(team), len(cand)))
+    for k, s in enumerate(team):
+        rest = team[:k] + team[k + 1:]
+        SEk, SVk, SDk = SE - m.E[s], SV - m.V[s], SD - m.D[s]
+        base = float(objective(m, fld, SEk, SVk, SDk))
+        g = np.asarray(objective(m, fld, SEk[None, :] + m.E[cand], SVk[None, :] + m.V[cand], SDk[None, :] + m.D[cand])) - base
+        for j in np.argsort(-g)[:60]:                          # the best few per starter are the only ones that can matter
+            if g[j] > 0 and lineup_legal(m, rest + [int(cand[j])], fixed_centers_off_lineup):
+                G[k, j] = g[j]
+    single = (W[:, None] * G).sum(0)
+    centers_left = m.rules.max_centers - int(m.isC[team].sum()) - fixed_centers_off_lineup
+    chosen, marg_of, covered = [], {}, np.zeros(len(team))
+    for _ in range(n_bench):
+        marg = (W[:, None] * np.maximum(G - overlap * covered[:, None], 0.0)).sum(0)
+        marg[chosen] = -1.0
+        if centers_left <= 0:
+            marg[m.isC[cand]] = -1.0
+        j = int(np.argmax(marg))
+        if marg[j] <= 1e-9:
+            break
+        chosen.append(j); marg_of[j] = float(marg[j])
+        covered = np.maximum(covered, G[:, j])
+        centers_left -= int(m.isC[cand[j]])
+    order = chosen + [int(j) for j in np.argsort(-single) if int(j) not in chosen and single[j] > 1e-9]
+    out = []
+    for r, j in enumerate(order[:top_k]):
+        contrib = W * G[:, j]
+        top = [team[k] for k in np.argsort(-contrib)[:2] if contrib[k] > 1e-9]
+        out.append(dict(idx=int(cand[j]), rank=(chosen.index(j) + 1) if j in chosen else None, value=float(single[j]),
+                        marginal=marg_of.get(j, 0.0), covers=top))
+    return out
+
+
+def solve_robust(pr: Problem):
+    """Like `solve`, but it always returns a roster. Returns (team, f, lam, scale, problem_used).
+
+    Late in an auction the forecast prices can sit above what a nearly empty wallet can pay (say $8 for 8 open slots
+    while every player is forecast at $1.4). The minimum bid is $1 whatever the forecast says, so a roster at minimum
+    prices is always affordable. In that case the forecast prices are shrunk towards the minimum bid until the
+    optimiser finds a legal roster:   scale 1.0 = forecast prices as they are, 0.0 = every free slot at the minimum bid.
+    If even that fails (no legal lineup at all among the available players) the roster is filled greedily and
+    `scale` is None: it then ignores the budget but still respects positions and the centre cap.
+    """
+    from dataclasses import replace
+
+    def at(scale: float) -> Problem:
+        return replace(pr, price=np.maximum(pr.model.rules.min_bid, pr.price * scale))
+
+    res = solve(pr)
+    if res is not None:
+        return res[0], res[1], res[2], 1.0, pr
+    lo_res = solve(at(0.0))
+    if lo_res is None:
+        return _emergency_fill(pr)
+    lo, hi, best = 0.0, 1.0, (lo_res, 0.0)
+    for _ in range(5):
+        mid = 0.5 * (lo + hi)
+        r = solve(at(mid))
+        if r is None:
+            hi = mid
+        else:
+            lo, best = mid, (r, mid)
+    (team, f, lam), scale = best
+    return team, f, lam, scale, at(scale)
+
+
+def _emergency_fill(pr: Problem):
+    """Budget-blind greedy roster that is still position- and centre-legal (last resort, never expected in practice)."""
+    m = pr.model
+    avail_idx = np.flatnonzero(pr.available)
+    val = np.full(m.n, -1e9); val[avail_idx] = _surrogate_value(m, avail_idx)
+    team = list(pr.fixed)
+    for i in np.argsort(-val):
+        if len(team) >= m.rules.n_starters:
+            break
+        if val[i] <= -1e8 or int(i) in team:
+            continue
+        if lineup_legal(m, team + [int(i)], pr.fixed_centers_off_lineup):
+            team.append(int(i))
+    SE, SV, SD = m.E[team].sum(0), m.V[team].sum(0), m.D[team].sum(0)
+    f = float(objective(m, pr.fld, SE, SV, SD, pr.kind, pr.rho))
+    return team, f, 0.0, None, pr
 
 
 def _polish(pr: Problem, team, cap: int, max_iter=30):

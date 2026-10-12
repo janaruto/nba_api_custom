@@ -99,6 +99,11 @@ und stehen im Notebook nur als Kommentar in Zelle 6 (siehe Abschnitt 9, Punkt 7)
 6. **Preisniveau live.** Aus Geldbilanz: Alles Restgeld im Raum wird für die noch offenen Spieler ausgegeben. Eine Anpassung
    der Preisform nach Preisstufe wurde getestet und bringt nichts (0,881 gegen 0,876 und 0,889 gegen 0,879 **[N12]**), also
    bewegt sie die Gebote nicht, sie wird nur angezeigt.
+7. **Bank** (`engine.bench_suggestions`): Für die drei Bankplätze nach dem Zielkader. Ohne IR und mit wöchentlicher Aufstellung bleibt der Platz eines
+   ausgefallenen Starters leer, wenn niemand einspringt. Für jeden Starter s (Gewicht = 1 − Verfügbarkeit) wird die Matchup-Chance der Aufstellung ohne s mit der
+   Aufstellung mit dem Kandidaten c an dessen Stelle verglichen; der Wert von c ist die gewichtete Summe dieser Zuwächse (Positionen und Center-Limit müssen
+   passen). Die Bankplätze werden gierig so gewählt, dass sie verschiedene Starter abdecken (ein späterer Spieler zählt, was er über die Hälfte des bereits
+   Abgedeckten hinaus bringt, `overlap = 0,5`: eine Annahme). Das ist eine Rangfolge erster Ordnung, keine Gewinnprognose; die App zeigt deshalb einen relativen Index.
 
 ---
 
@@ -209,14 +214,55 @@ geringer erwarteter Spielzahl zu Buche (49, 44, 44 Spiele **[N8]**).
 
 ## 10. Draft-Abend: Vorgehen
 
-1. Vorher: Notebook neu laufen lassen (rund 9 Minuten), App starten, `draft_app/draft_log.json` auf `[]` setzen.
-2. Bei jedem Aufruf: Spieler oben nachschlagen, „Zahle bis“ ablesen, nicht darüber gehen. Diese Obergrenze enthält bereits
-   $1 pro offenen Slot.
-3. Jeden Verkauf sofort eintragen (Spieler, Team, Preis). Rookies, die nicht in der Liste stehen, über den Ausklapper „Spieler nicht in der Liste?“.
-4. Preisniveau beobachten: Steht es dauerhaft über 1,0×, zahlt der Raum mehr als das Board. Dann werden die späteren Preise steigen und
+**Am Tag vorher (einmalig, rund 15 Minuten):**
+1. Notebook neu laufen lassen (rund 9 Minuten): `fantasy_draft_2026_27_v4_engine.ipynb`. Das aktualisiert Rosters, Trades und die Projektionen.
+2. Chrome: Tampermonkey mit dem Skript `draft_app/espn_bridge.user.js` (Version 0.2, nur ein Eintrag im Dashboard) und die Chrome-Einstellung „Benutzerskripts zulassen“.
+
+**Am Draft-Abend (zwei Minuten vor Beginn):**
+```bash
+conda activate nba-env
+./draft_app/start_draft_night.sh --reset
+```
+Das Skript aktualisiert den ESPN-Verletzungsstatus (`refresh_injuries.py`), leert das Draft-Log (`--reset`, nur vor dem echten Draft), startet den Empfänger und die App (`http://localhost:8502`). Strg+C beendet beides. Dann den ESPN-Draft-Room in Chrome öffnen: unten links muss das Badge „Draft-Room erkannt ✓“ zeigen.
+
+**Verletzte Spieler.** Hat ESPN einen Spieler auf OUT gesetzt (aktuell 13, u. a. Ingram), zieht das Modell 25 erwartete Spiele ab (`availability.py`, `OUT_GAMES_LOST`). Das ist eine Annahme, keine Messung. In der App kannst du unter „Verletzung / erwartete Spiele anpassen“ für einzelne Spieler die Spiele selbst festlegen. Wer täglich fraglich ist, wird nicht angepasst. Nachrichten bis kurz vor dem Draft holst du mit `python draft_app/refresh_injuries.py`, die App liest die Datei ohne Neustart.
+
+**Im Draft:**
+1. Bei jedem Aufruf zeigt die App oben den Spieler, das aktuelle Gebot, dein Limit und BIETEN / AUSSTEIGEN. Nicht über das Limit gehen. Es enthält bereits $1 pro offenen Slot.
+2. Verkäufe kommen automatisch aus dem Raum. Bei Fehlern gilt die manuelle Eingabe: Team antippen, Preis prüfen (vorbelegt mit der Prognose), „Eintragen“. Ruft der Raum einen anderen Spieler zuerst auf, wählst du ihn oben bei „Anderer Spieler aufgerufen?“. „Letzten Pick zurücknehmen“ korrigiert eine Fehleingabe, aber Achtung: Lädt man die Draft-Room-Seite neu, trägt der Empfänger zurückgenommene Picks wieder ein.
+3. Hast du den Zielkader zusammen, zeigt der Abschnitt „Bank-Vorschläge“, wen du für die offenen Bankplätze holen sollst (meist \$1). Beim Aufruf eines solchen Spielers steht „Bank-Kandidat“ mit dem Bank-Limit.
+4. Meldet der Empfänger einen Verkauf, den er nicht zuordnen kann (Spieler nicht im Pool), erscheint eine Warnung: von Hand eintragen.
+5. Preisniveau beobachten: Steht es dauerhaft über 1,0×, zahlt der Raum mehr als das Board. Dann werden die späteren Preise steigen und
    der Optimierer rechnet das ein.
-5. Nach rund 20 Picks lohnt ein Blick auf den Zielkader: weicht er stark vom Anfangs-Kader ab, ist das Absicht, nicht ein Fehler.
-6. Centers im Auge behalten (Maximum 4). Die App berücksichtigt das, aber ein Center mehr in Reserve engt die Optionen ein.
+6. Nach rund 20 Picks lohnt ein Blick auf den Zielkader: weicht er stark vom Anfangs-Kader ab, ist das Absicht, nicht ein Fehler.
+7. Centers im Auge behalten (Maximum 4). Die App berücksichtigt das, aber ein Center mehr in Reserve engt die Optionen ein.
+
+### Anbindung an den ESPN-Draft-Room (getestet im ESPN-Übungsdraft, 11. Oktober)
+
+Ziel: Die App erfährt den aufgerufenen Spieler, das aktuelle Gebot und jeden Verkauf automatisch, du musst nur noch in ESPN bieten.
+Die Anbindung liest nur mit, sie klickt nichts in ESPN und bietet nicht für dich.
+
+* **Bausteine.** `draft_app/espn_bridge.user.js` (Userscript für Tampermonkey, läuft in deinem eingeloggten Browser-Tab) →
+  `draft_app/bridge.py` (lokaler Empfänger auf 127.0.0.1:8765, Token in `draft_app/bridge_token.txt`) → Dateien, die die App alle 1,5 Sekunden prüft
+  (`draft_log.json`, `current_nomination.json`). Die App zeigt dann unter „Jetzt aufgerufen“ den Spieler aus dem Raum und dazu **BIETEN bis $X**,
+  **AUSSTEIGEN** oder **DU FÜHRST**, je nach aktuellem Gebot und deinem Limit.
+* **Gemessen an ESPNs echtem Draft-Room.** ESPN bietet in der Mock-Draft-Lobby einen „League Specific Practice Draft“ mit den Einstellungen dieser Liga an.
+  Dort habe ich die Selektoren angepasst und geprüft: aufgerufener Spieler (`.pickArea .player-selected .playerinfo__playername`), aktuelles Gebot
+  (`.pickArea .current-amount`), Höchstbietender (neuester Eintrag in `.bid-history__list`) und Verkäufe (alle Zellen des Draft Boards mit der Klasse
+  `completedPick`; das Team ergibt sich aus der Spalte, in der die Zelle steht). Die Liste „Picks“ von ESPN ist virtualisiert und zeigt nicht alle Zeilen,
+  das Board dagegen schon. Beim Abgleich mit ESPNs eigener Pick-Liste stimmten Spieler, Team und Preis bei allen Verkäufen überein.
+* **Ende-zu-Ende.** Aufruf, Gebotserhöhungen und Verkauf kamen aus dem ESPN-Raum über das Skript und den Empfänger in der App an, ohne einen Klick
+  (z. B. „BIETEN bis $95. Aktuell $20 (Team 15)“, danach der Verkauf im Log mit Quelle `espn`). Dazu 11 Tests für Namens- und Team-Zuordnung und die
+  Ereignisverarbeitung (`draft_app/tests/test_bridge.py`).
+* **Einrichtung.** Tampermonkey installieren und in Chrome unter Erweiterungen → Details „Benutzerskripts zulassen“ einschalten. `python draft_app/bridge.py`
+  starten, die App starten, das Skript mit dem Token aus `bridge_token.txt` installieren. ESPNs Seite darf keine Verbindung zu `127.0.0.1` aufbauen
+  (Sicherheitsrichtlinie der Seite); deshalb geht der Weg über Tampermonkey (`GM_xmlhttpRequest`). Zwei Kopien desselben Skripts erzeugen zwei Badges: im
+  Tampermonkey-Dashboard sollte nur ein Eintrag stehen.
+* **Grenzen.** Das Markup stammt aus dem Übungsdraft; der echte Raum ist am 17. Oktober dieselbe Oberfläche, aber das ist erst dann bestätigt. Ändert ESPN sein Markup,
+  muss man nachziehen (`Strg+Shift+D` speichert einen Seiten-Snapshot für die Anpassung). „Letzten Pick zurücknehmen“ gilt nur für Fehleingaben: Lädt man die
+  Draft-Room-Seite neu, schickt das Skript die Verkäufe erneut und der Empfänger trägt zurückgenommene Picks wieder ein (ESPN gilt als Wahrheit). Die Token-Prüfung
+  schützt nur vor fremden Webseiten, nicht vor anderen Programmen auf deinem Rechner. Aufgerufen wird im ESPN-Draft reihum durch die Teams; die Reihenfolge nach
+  ESPN-Rang in der App ist nur die Vorbelegung, solange die Anbindung keinen Spieler meldet.
 
 ---
 
@@ -229,6 +275,9 @@ geringer erwarteter Spielzahl zu Buche (49, 44, 44 Spiele **[N8]**).
 * **F3.** Kennst du die Manager? Wenn einige regelmässig Stars überbezahlen oder Bank-Plätze verschenken, lässt sich das als Rivalen-Profil einbauen.
 * **F4.** Welche Spieler siehst du anders als das Modell? Besonders Giannis, Tatum, Sabonis (Verfügbarkeit) und Keyonte George (Break-even-Preis $26 bei Board $10).
 * **F5.** Soll ich eine Nominierungs-Empfehlung ergänzen (wen aufrufen, um Rivalen Geld zu entziehen)?
+* **F6.** Ist die Aufruf-Reihenfolge im ESPN-Draft wirklich ESPNs Vorab-Rang? Die Liga-Daten selbst sind ohne Login nicht abrufbar (ESPN antwortet mit 401),
+  deshalb verwendet die App den öffentlichen ESPN-Rang für H2H-Kategorien. Wird anders aufgerufen (z. B. nominieren die Manager reihum selbst), greift
+  „Anderer Spieler aufgerufen?“. Ist die echte Reihenfolge vorab bekannt, kann man sie als Spalte `ESPN_RANK` in die Spielerliste schreiben.
 
 **Methodisch:**
 

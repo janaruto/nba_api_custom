@@ -149,3 +149,12 @@ fantasy_draft_2026_27_v3_strategy.xlsx
 draft_app/player_pool.csv
 draft_app/league_meta.json
 draft_app/draft_log.json
+# ESPN bridge: local token, live state and page snapshots (the snapshots can contain names from the ESPN page)
+draft_app/bridge_token.txt
+draft_app/current_nomination.json
+draft_app/bridge_unresolved.json
+draft_app/draft_room_dump_*.html
+draft_app/*.tmp
+# ESPN injury snapshot and the manual expected-games overrides (personal, regenerated)
+draft_app/injuries.json
+draft_app/availability_overrides.json
