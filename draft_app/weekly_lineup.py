@@ -33,6 +33,7 @@ ROOT = APP_DIR.parent
 sys.path.insert(0, str(APP_DIR))
 import availability  # noqa: E402
 import engine  # noqa: E402
+import espn_extra  # noqa: E402
 import names  # noqa: E402
 
 SEASON = "2026-27"
@@ -75,7 +76,10 @@ def next_monday(today: dt.date) -> dt.date:
 
 
 # ── data ─────────────────────────────────────────────────────────────────────────────────────────────
-def load_pool_and_meta():
+def load_pool_and_meta(rostered_names=None):
+    """Pool (injury-adjusted) and league meta. With `rostered_names`, every rostered player the model has no real line for
+    (rookies, new signings, draft-night placeholders) gets ESPN's own projection instead - see espn_extra.py. Which players
+    that concerned is kept in pool.attrs['espn_filled'] / ['espn_missing']."""
     meta = json.loads((APP_DIR / "league_meta.json").read_text())
     pool = pd.read_csv(APP_DIR / "player_pool.csv").reset_index(drop=True)
     try:
@@ -86,7 +90,15 @@ def load_pool_and_meta():
         ovr = json.loads((APP_DIR / "availability_overrides.json").read_text())
     except FileNotFoundError:
         ovr = {}
+    filled, missing = [], []
+    if rostered_names:
+        try:
+            pool, extra_inj, filled, missing = espn_extra.extend_pool(pool, list(rostered_names))
+            inj = {**inj, **extra_inj}
+        except Exception as e:                                   # no network and no cached ESPN list: carry on without
+            print(f"(ESPN-Projektionen für Rookies/Neuzugänge nicht verfügbar: {type(e).__name__})")
     pool = availability.adjust_pool(pool, inj, ovr)
+    pool.attrs["espn_filled"], pool.attrs["espn_missing"] = filled, missing
     cal = meta.get("calibration")
     if cal:
         engine.CAL_A, engine.CAL_B = cal["cal_a"], cal["cal_b"]
@@ -179,12 +191,12 @@ def fmt(x, d=1):
 
 
 def run(args) -> int:
-    pool, meta = load_pool_and_meta()
-    you = args.team or meta["your_team_name"]
     if not ROSTERS_JSON.exists():
         print("league_rosters.json fehlt: wird aus dem Draft-Log erzeugt (danach nach Trades/Adds/Drops von Hand anpassen).")
         init_rosters()
     rosters_names = json.loads(ROSTERS_JSON.read_text())
+    pool, meta = load_pool_and_meta([n for ns in rosters_names.values() for n in ns])
+    you = args.team or meta["your_team_name"]
 
     # week: dates and opponent
     opponent, start, end, label = args.opponent, args.start, args.end, ""
@@ -200,8 +212,17 @@ def run(args) -> int:
                 if b == you: opponent = a
     if not opponent:
         print("Gegner fehlt: --opponent \"Teamname\" oder --week N mit league_schedule.json"); return 2
-    opponent = TEAM_ALIASES.get(opponent, opponent) if opponent else opponent
-    you = TEAM_ALIASES.get(you, you)
+    def _key(name):                                      # ESPN's current name or the draft-log name of the same team
+        if name in rosters_names:
+            return name
+        for a, b in TEAM_ALIASES.items():
+            if name == a and b in rosters_names:
+                return b
+            if name == b and a in rosters_names:
+                return a
+        return name
+    opponent = _key(opponent) if opponent else opponent
+    you = _key(you)
     if opponent not in rosters_names or you not in rosters_names:
         print("Teams in league_rosters.json:", ", ".join(rosters_names)); return 2
     if not start:

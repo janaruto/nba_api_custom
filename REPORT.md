@@ -237,6 +237,26 @@ Das Skript aktualisiert den ESPN-Verletzungsstatus (`refresh_injuries.py`), leer
 6. Nach rund 20 Picks lohnt ein Blick auf den Zielkader: weicht er stark vom Anfangs-Kader ab, ist das Absicht, nicht ein Fehler.
 7. Centers im Auge behalten (Maximum 4). Die App berücksichtigt das, aber ein Center mehr in Reserve engt die Optionen ein.
 
+### Liga-Werkzeuge: aktuelle Kader, Rangliste, Trades (18. Oktober)
+
+`./draft_app/league.sh all` stellt die Kader aller Teams auf den aktuellen Stand, rechnet die Rangliste mit Siegchancen neu und macht Trade-Vorschläge.
+`refresh` zeigt dabei, welche Trades und Wechsel seit dem letzten Stand passiert sind.
+- **Quelle der Kader:** ESPNs Liga-Daten sind nur eingeloggt abrufbar. Der sichere Weg ohne Zugangsdaten im Werkzeug: im eingeloggten Chrome die Adresse
+  `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leagues/<Liga-ID>?view=mRoster&view=mTeam` öffnen und die Seite mit Cmd+S als
+  `draft_app/espn_league.json` speichern. Optional, wenn man ESPN-Cookies hinterlegen will: Umgebungsvariablen `ESPN_S2` und `ESPN_SWID` oder `draft_app/espn_auth.json`
+  (beides bleibt lokal und ist in `.gitignore`).
+- **`offer`:** Jemand fragt nach deinem Spieler: was kannst du zurückverlangen? Einzelne Spieler und Zweierpakete des Managers, sortiert nach deinem Gewinn, nur Angebote, die
+  ihm fair vorkommen (ESPN-Wert und Draft-Preis), mit Stat-Vergleich und Kategorie-Veränderung für beide Seiten.
+- **`want`:** Du willst einen Spieler: Angebote aus einem oder zwei deiner Spieler, die für den Manager fair wirken und dir am meisten bringen, mit Stat-Vergleich, der
+  Veränderung der Wochensummen beider Teams und einem Nachrichtenvorschlag.
+- **Rookies und Neuzugänge:** Spieler ohne NBA-Daten im Modell-Pool (zehn Stück zum Stand 18. Oktober, u. a. Dybantsa, Boozer, Peterson, Wilson) werden mit ESPNs eigener
+  Projektion für 2027 bewertet (`espn_extra.py`; gilt auch für die Wochen-Aufstellung). Doppel-Doppel rechnet das Werkzeug aus der Stat-Linie (ESPN zeigt 0.0), die
+  Streuung pro Spiel kommt aus dem Zusammenhang Mittelwert/Streuung der übrigen Spieler, die Spielzahl aus ESPNs Prognose, skaliert mit ESPNs Optimismus gegenüber dem
+  Modell (Faktor 0.83). Das ist eine Übergangslösung: eine Rookie-Linie ist ein Schätzwert ohne eine einzige NBA-Minute dahinter. Ohne ESPN-Projektion (Aday Mara,
+  Yanic Konan Niederhauser, Udonis Haslem) bleibt ein Spieler unbewertet.
+- **Grenzen:** „Fair“ ist eine Faustregel aus ESPN-Wert und Draft-Preis. Alle Zahlen sind
+  Modellschätzungen mit durchschnittlichen Wochen; ein Trade kann in einer Woche mit wenigen Spielen anders aussehen.
+
 ### Wochen-Aufstellung (18. Oktober)
 
 `python draft_app/weekly_lineup.py --week N` schlägt für jedes Matchup die zehn Starter vor. Das Skript zählt, wie viele Spiele das NBA-Team jedes Spielers in der

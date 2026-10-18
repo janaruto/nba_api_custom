@@ -166,3 +166,6 @@ draft_app/league_rosters.json
 draft_app/league_schedule.json
 # personal settings (owner name in the ESPN draft room)
 draft_app/local_config.json
+draft_app/espn_league.json
+draft_app/espn_auth.json
+draft_app/league_rosters_prev.json
