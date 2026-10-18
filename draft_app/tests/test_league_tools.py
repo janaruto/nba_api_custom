@@ -92,3 +92,49 @@ def test_json_without_teams_is_explained(paths):
     with pytest.raises(SystemExit) as e:
         lt.refresh(types.SimpleNamespace(file=str(paths / "other.json")))
     assert "keine ESPN-Teamliste" in str(e.value)
+
+
+# ── want: several players per side, several options ──────────────────────────────────────────────────
+def res(d_me, d_x, v_give=10.0, v_get=10.0):
+    return {"d_me": d_me, "d_x": d_x, "v_give": v_give, "v_get": v_get}
+
+
+def test_parse_count_numbers_ranges_and_errors():
+    assert lt.parse_count("2") == [2] and lt.parse_count("1-3") == [1, 2, 3] and lt.parse_count("3-1") == [1, 2, 3]
+    assert lt.parse_count(None, "1-2") == [1, 2] and lt.parse_count("", "1") == [1]
+    for bad in ("0", "4", "1-4", "zwei", "1,2"):
+        with pytest.raises(SystemExit):
+            lt.parse_count(bad)
+
+
+def test_options_are_sorted_by_their_own_goal_and_never_repeat_a_trade():
+    both_small = ([1], [9], res(0.004, 0.004))
+    both_big = ([2], [9], res(0.012, 0.010))
+    me_only = ([3], [9], res(0.030, -0.008))
+    fair_only = ([4], [9], res(0.006, -0.002, v_give=12, v_get=12))
+    hurts_me = ([5], [9], res(-0.01, 0.02))
+    allr = [both_small, me_only, hurts_me, both_big, fair_only]
+    one = [[x[0] for x in c] for _, c in lt.pick_options(allr, top=1)]
+    assert one == [[[2]], [[3]], [[4]]]                                                              # one answer per option, each by its own goal
+    two = [[x[0] for x in c] for _, c in lt.pick_options(allr, top=2)]
+    assert two[0] == [[2], [1]]                                                                      # by the smaller of the two gains
+    shown = [tuple(g) for c in two for g in c]
+    assert len(shown) == len(set(shown)) and (5,) not in shown                                        # a trade that costs you is never offered
+
+
+def test_a_trade_that_only_adds_pieces_without_changing_anything_is_dropped():
+    small = ([1], [9], res(0.004, 0.002))
+    padded_give = ([1, 2], [9], res(0.004, 0.002))                                                   # 2 sits on the bench: no effect
+    padded_get = ([1], [9, 8], res(0.004, 0.002))
+    different = ([1, 3], [9], res(0.009, 0.002))
+    kept = lt.drop_redundant([small, padded_give, padded_get, different])
+    assert sorted((tuple(g), tuple(t)) for g, t, _ in kept) == [((1,), (9,)), ((1, 3), (9,))]
+
+
+def test_candidates_cover_the_requested_sizes_and_respect_keep_and_skip():
+    L = types.SimpleNamespace(you="me", rosters={"me": [1, 2, 3, 4], "them": [9, 8, 7, 6, 5]})
+    c = lt.want_candidates(L, "them", [9], give_ns=[1, 2], get_ns=[1, 2], keep={4}, skip={8})
+    sizes = {(len(g), len(t)) for g, t in c}
+    assert sizes == {(1, 1), (1, 2), (2, 1), (2, 2)}
+    assert all(9 in t and 4 not in g and 8 not in t for g, t in c)
+    assert len(c) == (3 + 3) * (1 + 3)                                                                # give 1 or 2 of my 3 offerable · get nothing extra or 1 of {7, 6, 5}

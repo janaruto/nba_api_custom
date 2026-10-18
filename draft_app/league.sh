@@ -3,7 +3,9 @@
 #   ./draft_app/league.sh all                                   Rosters aktualisieren + Rangliste + Trade-Ideen
 #   ./draft_app/league.sh refresh | rank | suggest
 #   ./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray"    jemand fragt nach deinem Spieler: was kannst du zurückverlangen?
-#   ./draft_app/league.sh want "Alperen Sengun"                              du willst einen Spieler: Angebot, Stat-Veränderung, Nachricht
+#   ./draft_app/league.sh want "Alperen Sengun"                              du willst einen Spieler: Angebote, Stat-Veränderung, Nachricht
+#   ./draft_app/league.sh want "Alperen Sengun" --give 2 --get 2             wie viele Spieler im Trade (Zahl oder Bereich 1-3; --get zählt den Wunschspieler mit),
+#                                                                            --keep "A;B" nie anbieten, --skip "C" nicht mitverlangen, --top N Optionen je Kategorie
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=".venv/bin/python"

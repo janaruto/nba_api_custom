@@ -55,7 +55,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 58 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 62 Tests, ohne Netzwerk
 ```
 
 | Aufgabe | Befehl |
@@ -65,7 +65,8 @@ python3 -m venv .venv
 | Aufstellung für Matchup-Woche N | `./draft_app/weekly.sh N` oder `./draft_app/weekly.sh --opponent "Teamname"` |
 | Alle Kader aktualisieren, Rangliste, Trade-Ideen | `./draft_app/league.sh all` |
 | Jemand fragt nach deinem Spieler: was zurückverlangen? | `./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray"` |
-| Du willst einen Spieler: Angebot, Stat-Veränderung, Nachricht | `./draft_app/league.sh want "Evan Mobley"` |
+| Du willst einen Spieler: Angebote, Stat-Veränderung, Nachricht | `./draft_app/league.sh want "Evan Mobley"` |
+| ... mit Trade-Grösse (wie viele Spieler auf jeder Seite; `--get` zählt den Wunschspieler mit), ohne bestimmte Spieler anzubieten | `./draft_app/league.sh want "Evan Mobley" --give 2 --get 2 --keep "Jamal Murray;Devin Booker"` (Zahl oder Bereich 1–3, mehrere Wunschspieler mit `;`, `--skip` = nicht mitverlangen, `--top N` = Optionen je Kategorie) |
 
 Die persönlichen Dateien (Liga-ID, Eigentümername, Kader, ESPN-Liga-Daten) liegen nur lokal und sind in `.gitignore` (Abschnitt 12). Für die Liga-Werkzeuge braucht es
 `draft_app/local_config.json` mit `{"league_id": <ID aus der ESPN-URL>, "owner_names": ["<Name im Draft-Room>"]}`.
@@ -87,7 +88,7 @@ Die persönlichen Dateien (Liga-ID, Eigentümername, Kader, ESPN-Liga-Daten) lie
 | `draft_app/league_tools.py`, `league.sh` | Kader aller Teams aktualisieren, Rangliste mit Siegchancen, Trade-Vorschläge, Angebote, Wunschspieler |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 58 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
+| `draft_app/tests/` | 62 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -297,7 +298,11 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
   ein Angebot wirkt für den Manager fair, wenn er mindestens Wert minus \$3 bekommt.
 * **`suggest`:** alle Ein-gegen-Eins-Trades mit allen Teams; gezeigt werden die Win-Win-Trades (mein Gewinn über +0.1 Pp, Partner nicht schlechter als −0.1 Pp) und die für den Manager fairen.
 * **`offer`:** jemand fragt nach Spielern von dir; geprüft werden alle Einzelspieler und Zweierpakete des Managers, sortiert nach deinem Gewinn, nur faire Angebote, plus die modellbesten auch bei Wertverlust des Managers.
-* **`want`:** du willst einen Spieler; geprüft werden alle Angebote aus einem oder zwei deiner Spieler (fair für den Manager, dessen Siegchance dabei um höchstens 1 Pp sinkt), mit Stat-Vergleich, Veränderung der Wochensummen beider Teams und Nachrichtenentwurf.
+* **`want`:** du willst einen Spieler (oder mehrere vom selben Team) und legst fest, wie viele Spieler im Trade sein sollen: `--give` = wie viele du abgibst, `--get` = wie viele du bekommst (der Wunschspieler zählt mit, der Rest sind weitere Spieler des Partners), jeweils eine Zahl oder ein Bereich von 1 bis 3.
+  `--keep` schützt eigene Spieler, `--skip` nimmt Spieler des Partners aus der Anfrage. Es werden alle passenden Trades durchgerechnet (beide Aufstellungen neu optimiert, Siegchance und Kategorien beider Teams) und in **drei Optionen** gezeigt, weil „der beste Trade“ davon abhängt, was man will:
+  (1) *Beide profitieren*, sortiert nach dem kleineren der beiden Gewinne; (2) *Grösster Gewinn für dich*, solange die Siegchance des Managers um höchstens 1 Pp sinkt; (3) *Wirkt für den Manager fair*, also Wert nach ESPN-Liste/Draft-Preis mindestens Wert minus \$3 und höchstens 0.5 Pp Verlust.
+  Ein Trade erscheint nur unter der ersten Option, die ihn aufnimmt, und Trades, die gegenüber einem kleineren nur Stücke ohne jede Wirkung hinzufügen (z. B. ein Bankspieler als Zugabe), werden verworfen. Zu jeder Option stehen die Stat-Zeilen aller Spieler, die Siegchance vorher/nachher für beide Teams und die wichtigsten Kategorie-Veränderungen;
+  zur ersten Option kommen ein Nachrichtenentwurf und die Tabelle der erwarteten Wochensummen beider Teams vorher/nachher. Bei grossen Suchen (über 1'200 mögliche Trades, z. B. 3 gegen 3: rund 30'000) wird erst eine grobe Näherung gerechnet (Aufstellungen nicht neu optimiert, Positionen nicht geprüft), und nur die rund 1'200 vielversprechendsten Trades werden genau durchgerechnet (rund 20 Sekunden).
 
 **ESPN-Ersatzlinien für Spieler ohne NBA-Daten** (`espn_extra.py`). Rookies und Neuzugänge fehlen im Pool oder stehen dort nur als Platzhalter. Für sie gilt ESPNs eigene Projektion 2027:
 
@@ -440,6 +445,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E22 | 18. Okt. | Repo auf die Fantasy-Pipeline verkleinert (Upstream-Entwicklungsumgebung, ältere Notebooks, `REPORT.md` entfernt) | v2 und v3 schrieben dasselbe `player_pool.csv` im alten Format; ein versehentlicher Lauf hätte den v4-Export zerstört. Die Befunde stehen hier | Tag `archive/pre-cleanup` zeigt auf den vorherigen Stand |
 | E23 | 18. Okt. | „Fair“ = Wert (Mittel aus ESPN-Wert und Draft-Preis) ≥ Wert des Partners minus \$3 | Managers schauen auf ESPN-Werte und Preise; \$3 Toleranz für Rauschen | Faustregel |
 | E24 | 18. Okt. | Rookies/Neuzugänge in den Liga-Werkzeugen mit ESPNs Projektion bewerten | Bis zur ersten NBA-Spielzeit gibt es nichts Besseres; Auslassen verzerrte die Rangliste | Übergangslösung |
+| E25 | 18. Okt. | `want`: Trade-Grösse frei wählbar und mehrere Optionen statt „dem einen besten“ | Was „am besten“ ist, hängt vom Ziel ab (beide profitieren, mein Gewinn, Akzeptanz beim Manager); redundante Zugaben ohne Wirkung werden verworfen; grosse Suchen erst grob vorgefiltert | Näherung nur für die Vorauswahl, die Ausgabe ist immer genau gerechnet |
 
 ---
 
@@ -507,7 +513,7 @@ Optional lassen sich ESPN-Cookies (`ESPN_S2`, `ESPN_SWID` als Umgebungsvariablen
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 58 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 62 Tests):
 
 | Datei | Prüft |
 |---|---|
@@ -517,7 +523,7 @@ Optional lassen sich ESPN-Cookies (`ESPN_S2`, `ESPN_SWID` als Umgebungsvariablen
 | `test_availability.py` | Verletzungs-Overlay und Überschreibungen |
 | `test_bridge.py` | Namens- und Team-Zuordnung, Ereignisverarbeitung, Token, Doppelverkäufe |
 | `test_weekly.py` | Spielplan, Spielzahlen je Team, beste legale Aufstellung, Team-Aliase |
-| `test_league_tools.py` | ESPN-JSON lesen, Trades/Neuverpflichtungen/Entlassungen, falsch benannte Dateien, Cookie-Dateien werden nie als Liga-Daten genommen |
+| `test_league_tools.py` | ESPN-JSON lesen, Trades/Neuverpflichtungen/Entlassungen, falsch benannte Dateien, Cookie-Dateien werden nie als Liga-Daten genommen; `want`: Grössenangaben, Kandidaten, die drei Optionen, Wegfall wirkungsloser Zugaben |
 | `test_espn_extra.py` | ESPN-Ersatzlinien: fehlende Spieler, Platzhalter, fehlende Projektion, kein Netzwerk wenn nichts zu tun ist, DD-Reihenfolge, ID-Kollisionen |
 
 Die Oberfläche der App ist nur manuell im Browser getestet (und über `streamlit.testing`-Läufe in der Entwicklung), nicht automatisiert.

@@ -6,6 +6,8 @@ League tools: current rosters, rankings, trade ideas, offers and wish players
     python draft_app/league_tools.py suggest                                  # trade ideas for you
     python draft_app/league_tools.py offer --team "Brick City" --asks "Jamal Murray"        # somebody asks for YOUR player(s): what to ask back
     python draft_app/league_tools.py want "Alperen Sengun"                    # you want a player: what to offer, how the stats change, a message for the manager
+    python draft_app/league_tools.py want "Alperen Sengun" --give 2 --get 2   # ... as a 2-for-2 (the wish player + one more of his team); also 1-3 ranges,
+                                                                              #     --keep "A;B" (never offer them), --skip "C" (do not ask for them), --top N
     python draft_app/league_tools.py all                                      # refresh + rank + suggest
 
 Where the rosters come from (`refresh`), in this order:
@@ -21,6 +23,7 @@ import argparse
 import itertools
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -41,6 +44,8 @@ LEAGUE_JSON = APP_DIR / "espn_league.json"
 AUTH_JSON = APP_DIR / "espn_auth.json"
 LOCAL_JSON = APP_DIR / "local_config.json"
 ALIASES = {"Unsupervised Chaos": "Team 15"}                 # same team: ESPN renamed it after the draft
+FAIR_TOL = 3                                                # a trade looks fair to the manager if he gets at least (value given away) - $3
+MAX_EXACT = 1200                                            # trades evaluated exactly (lineups re-optimised); larger searches are pre-filtered
 CATN = engine.CATS
 
 
@@ -196,7 +201,7 @@ class League:
             self.paid = {}
         self.T = list(self.rosters)
         self.n = len(self.T)
-        z = ((self.model.E - self.model.E.mean(0)) / np.maximum(self.model.E.std(0), 1e-9)).sum(1)
+        z = self.z = ((self.model.E - self.model.E.mean(0)) / np.maximum(self.model.E.std(0), 1e-9)).sum(1)
         self.lineups = {t: sorted(r, key=lambda i: -z[i])[:10] for t, r in self.rosters.items()}
         for _ in range(3):
             self.fld = engine.Field.from_rosters(self.model, list(self.lineups.values()))
@@ -221,7 +226,7 @@ class League:
     def find_player(self, text: str) -> int:
         hit = names.resolve_player(names.build_index(self.pool.PLAYER_ID, self.pool.PLAYER_NAME), text)
         if hit is None:
-            raise SystemExit(f"Spieler '{text}' nicht im Pool (Schreibweise prüfen, Rookies fehlen).")
+            raise SystemExit(f"Spieler '{text}' nicht im Pool (Schreibweise prüfen; Spieler ohne ESPN-Projektion können nicht bewertet werden).")
         return {int(p): i for i, p in enumerate(self.pool.PLAYER_ID)}[hit[0]]
 
     def owner(self, i: int):
@@ -272,14 +277,11 @@ class League:
         return acc / k
 
     def win_pct(self, t, mom, others=None):
-        tot, k = 0.0, 0
-        for u in self.T:
-            if u == t:
-                continue
-            om = (others or {}).get(u, self.mom[u])
-            pc = engine.phi((mom[0] - om[0]) / np.sqrt(mom[1] ** 2 + om[1] ** 2))
-            tot += float(engine.matchup_prob(pc, self.rules)); k += 1
-        return tot / k
+        """Mean P(matchup) of team t (moments `mom`) against every other team; `others` overrides single opponents' moments."""
+        oth = [(others or {}).get(u, self.mom[u]) for u in self.T if u != t]
+        om, osd = np.array([o[0] for o in oth]), np.array([o[1] for o in oth])
+        pc = engine.phi((mom[0] - om) / np.sqrt(mom[1] ** 2 + osd ** 2))               # (opponents, categories)
+        return float(np.mean(engine.matchup_prob(pc, self.rules)))
 
     def value(self, i: int) -> float:
         """What managers see: ESPN's pre-draft value and what was paid in the draft (mean of both when known)."""
@@ -306,6 +308,24 @@ class League:
                    mom_me=mm, mom_x=mp, lineup_me=lm, lineup_x=lp,
                    v_give=sum(self.value(p) for p in give), v_get=sum(self.value(p) for p in get))
         return res
+
+    # -- cheap approximation of a trade (no re-optimised lineups, no legality check): only used to pre-filter big searches
+    def quick_lineup(self, t, out, inc):
+        z = self.z
+        lu = [p for p in self.lineups[t] if p not in out]
+        rest = sorted([p for p in self.rosters[t] if p not in out and p not in lu] + list(inc), key=lambda p: -z[p])
+        while len(lu) < 10 and rest:
+            lu.append(rest.pop(0))
+        for p in [q for q in inc if q not in lu]:                 # an incoming player better than the weakest starter takes his place
+            w = min((q for q in lu if q not in inc), key=lambda q: z[q], default=None)
+            if w is not None and z[p] > z[w]:
+                lu[lu.index(w)] = p
+        return lu
+
+    def quick_trade(self, me, partner, give, get):
+        mm = self.model.team_moments(self.quick_lineup(me, give, get))
+        mp = self.model.team_moments(self.quick_lineup(partner, get, give))
+        return (self.win_pct(me, mm, {partner: mp}) - self.base[me], self.win_pct(partner, mp, {me: mm}) - self.base[partner])
 
     # -- standings
     def standings(self, sims=3000, seed=7):
@@ -430,43 +450,164 @@ def cmd_offer(L: League, args):
         print(reason(L, x, asked, list(get), r)); print()
 
 
+def parse_count(text, default="1-2", lo=1, hi=3) -> list:
+    """'2' -> [2], '1-3' -> [1, 2, 3] (number of players on one side of a trade)."""
+    t = str(default if text in (None, "") else text).strip()
+    m = re.fullmatch(r"(\d+)(?:\s*-\s*(\d+))?", t)
+    if not m:
+        raise SystemExit(f"Zahl oder Bereich erwartet (z. B. 2 oder 1-3), nicht '{text}'.")
+    a, b = sorted((int(m.group(1)), int(m.group(2) or m.group(1))))
+    if a < lo or b > hi:
+        raise SystemExit(f"Erlaubt sind {lo} bis {hi} Spieler pro Seite.")
+    return list(range(a, b + 1))
+
+
+def fair_value(r) -> bool:
+    return r["v_give"] >= r["v_get"] - FAIR_TOL
+
+
+# (title, accepts the trade, sort key)  - several answers to "what could I offer", because "best" depends on what you want
+WANT_OPTIONS = [
+    ("Beide profitieren (sortiert nach dem kleineren der beiden Gewinne)",
+     lambda r: r["d_me"] > 0.0005 and r["d_x"] > 0.0005, lambda r: min(r["d_me"], r["d_x"])),
+    ("Grösster Gewinn für dich (die Siegchance des Managers sinkt um höchstens 1 Pp)",
+     lambda r: r["d_me"] > 0.0005 and r["d_x"] >= -0.01, lambda r: r["d_me"]),
+    ("Wirkt für den Manager fair (Wert laut ESPN-Liste/Draft-Preis, Siegchance sinkt um höchstens 0.5 Pp)",
+     lambda r: r["d_me"] > 0.0005 and r["d_x"] >= -0.005 and fair_value(r), lambda r: r["d_me"]),
+]
+
+
+def drop_redundant(results) -> list:
+    """Remove trades that only add pieces without changing anything: if a smaller trade (subset on both sides, wish players
+    are on both sides anyway) has the same effect for both teams, the bigger one just gives away or asks for more for nothing."""
+    bins: dict = {}
+    for item in results:
+        bins.setdefault((round(item[2]["d_me"], 3), round(item[2]["d_x"], 3)), []).append(item)
+    keep = []
+    for items in bins.values():
+        sets = [(set(g), set(t), (g, t, r)) for g, t, r in items]
+        for g, t, orig in sets:
+            if not any(g2 <= g and t2 <= t and (g2, t2) != (g, t) for g2, t2, _ in sets):
+                keep.append(orig)
+    return keep
+
+
+def pick_options(results, top=2) -> list:
+    """results: [(give, get, r)] -> [(title, [(give, get, r)])]; each trade appears under the first option that takes it."""
+    seen, out = set(), []
+    for title, ok, key in WANT_OPTIONS:
+        chosen = []
+        for give, get, r in sorted((x for x in results if ok(x[2])), key=lambda x: -key(x[2])):
+            k = (tuple(sorted(give)), tuple(sorted(get)))
+            if k in seen:
+                continue
+            seen.add(k); chosen.append((give, get, r))
+            if len(chosen) >= top:
+                break
+        out.append((title, chosen))
+    return out
+
+
+def side_text(L: League, ids, indent="      ") -> str:
+    return "\n".join(f"{indent}{stat_line(L, i)}" for i in ids)
+
+
+def describe(L: League, partner, give, get, r) -> str:
+    me = L.you
+    bm, bx = L.base[me], L.base[partner]
+    return "\n".join([
+        f"    Du gibst ({len(give)}):\n{side_text(L, give)}",
+        f"    Du bekommst ({len(get)}):\n{side_text(L, get)}",
+        f"    Du:  Siegchance pro Woche {100 * bm:.1f}% -> {100 * (bm + r['d_me']):.1f}% ({100 * r['d_me']:+.1f} Pp) · Kategorien in Pp: {cat_delta_text(r['cat_me'], 4)}",
+        f"    {partner[:22]}: {100 * bx:.1f}% -> {100 * (bx + r['d_x']):.1f}% ({100 * r['d_x']:+.1f} Pp) · Kategorien in Pp: {cat_delta_text(r['cat_x'], 4)}",
+        f"    Wert aus Sicht des Managers (ESPN-Liste/Draft-Preis): er bekommt ${r['v_give']:.0f}, gibt ${r['v_get']:.0f}"
+        + ("  -> wirkt fair oder besser für ihn" if fair_value(r) else "  -> er verliert Wert, braucht ein Argument")])
+
+
+def want_candidates(L: League, x, wishes, give_ns, get_ns, keep, skip):
+    """All trades 'I give n of my players, I get the wish players + (m - wishes) more of the partner's' as (give, get)."""
+    mine = [p for p in L.rosters[L.you] if p not in keep]
+    theirs = [p for p in L.rosters[x] if p not in wishes and p not in skip]
+    out = []
+    for n in give_ns:
+        for give in itertools.combinations(mine, n):
+            for m in get_ns:
+                for extra in itertools.combinations(theirs, m - len(wishes)):
+                    out.append((list(give), list(wishes) + list(extra)))
+    return out
+
+
 def cmd_want(L: League, args):
     me = L.you
-    w = L.find_player(args.player)
-    x = L.owner(w)
-    if x is None:
-        raise SystemExit(f"{L.model.names[w]} gehört keinem Team (frei).")
+    wishes = [L.find_player(p.strip()) for p in args.player.split(";") if p.strip()]
+    owners = {L.owner(w) for w in wishes}
+    if None in owners:
+        raise SystemExit("Mindestens ein Wunschspieler gehört keinem Team (frei).")
+    if len(owners) > 1:
+        raise SystemExit("Die Wunschspieler gehören verschiedenen Teams: ein Trade geht nur mit einem Partner.")
+    x = owners.pop()
     if x == me:
         raise SystemExit("Der Spieler gehört schon dir.")
-    print(f"\nWunschspieler: {stat_line(L, w)}\nBesitzer: {x}")
-    cands = []
-    mine = L.rosters[me]
-    for k in (1, 2):
-        for give in itertools.combinations(mine, k):
-            cands.append((give, L.trade(me, x, list(give), [w])))
-    fair = [c for c in cands if c[1]["v_give"] >= c[1]["v_get"] - 3 and c[1]["d_x"] > -0.01]
-    fair.sort(key=lambda c: -c[1]["d_me"])
-    print("\n== Angebote, die für den Manager fair wirken und dir am meisten bringen ==")
-    shown = fair[:4] or sorted(cands, key=lambda c: -(c[1]["d_me"] + c[1]["d_x"]))[:4]
-    if not fair:
-        print("  (Kein Angebot erfüllt beide Kriterien; hier die besten Kompromisse)")
-    for give, r in shown:
-        print(reason(L, x, list(give), [w], r)); print()
-    if shown:
-        give, r = shown[0]
-        gs = " + ".join(L.model.names[i] for i in give)
-        print("== Nachricht an den Manager (Vorschlag) ==")
-        print(f"  Hallo, ich würde dir {gs} für {L.model.names[w]} anbieten.")
-        print(f"  Für dich: {gs} bringt dir in den Kategorien {cat_delta_text(r['cat_x'], 3)} (Veränderung deiner Wochen-Gewinnchance je Kategorie in Prozentpunkten),")
-        print(f"  insgesamt {100 * r['d_x']:+.1f} Prozentpunkte Siegchance pro Woche nach meiner Rechnung.")
-        print("  Ist das etwas für dich?")
-        print("\n== So ändern sich eure Werte (erwartete Wochensummen) ==")
-        print(f"  {'':8}{'du jetzt':>12}{'du danach':>12}{x[:14]:>16}{'danach':>10}")
-        for j, c in enumerate(CATN):
-            a0, a1, b0, b1 = L.mom[me][0][j], r["mom_me"][0][j], L.mom[x][0][j], r["mom_x"][0][j]
-            f = "{:>12.3f}{:>12.3f}{:>16.3f}{:>10.3f}" if c in ("FG_PCT", "FT_PCT", "PTS_MIN") else "{:>12.1f}{:>12.1f}{:>16.1f}{:>10.1f}"
-            print(f"  {engine.LABEL[c]:<8}" + f.format(a0, a1, b0, b1))
-        print(f"  Siegchance/Woche: du {100 * L.base[me]:.1f}% -> {100 * (L.base[me] + r['d_me']):.1f}%   ·   {x} {100 * L.base[x]:.1f}% -> {100 * (L.base[x] + r['d_x']):.1f}%")
+    keep = {L.find_player(p.strip()) for p in (args.keep or "").split(";") if p.strip()}
+    skip = {L.find_player(p.strip()) for p in (args.skip or "").split(";") if p.strip()}
+    if not keep <= set(L.rosters[me]):
+        raise SystemExit("--keep: nur Spieler aus deinem Kader.")
+    if not skip <= set(L.rosters[x]):
+        raise SystemExit(f"--skip: nur Spieler aus dem Kader von {x}.")
+    give_ns = parse_count(args.give, "1-2")
+    get_ns = [m for m in parse_count(args.get, str(len(wishes))) if m >= len(wishes)]
+    if not get_ns:
+        raise SystemExit(f"--get muss mindestens die {len(wishes)} Wunschspieler enthalten.")
+
+    print(f"\nWunschspieler von {x}:")
+    for w in wishes:
+        print("  " + stat_line(L, w))
+    cands = want_candidates(L, x, wishes, give_ns, get_ns, keep, skip)
+    print(f"Suche: du gibst {'-'.join(map(str, [give_ns[0], give_ns[-1]])) if len(give_ns) > 1 else give_ns[0]}, "
+          f"du bekommst {'-'.join(map(str, [get_ns[0], get_ns[-1]])) if len(get_ns) > 1 else get_ns[0]} Spieler (Wunschspieler eingerechnet) · {len(cands)} mögliche Trades"
+          + (f" · behalten: {', '.join(L.model.names[i] for i in keep)}" if keep else "")
+          + (f" · nicht verlangt: {', '.join(L.model.names[i] for i in skip)}" if skip else ""))
+    if not cands:
+        raise SystemExit("Keine möglichen Trades mit diesen Einschränkungen.")
+    if len(cands) > MAX_EXACT:                                        # cheap approximation first, exact evaluation for the promising ones
+        quick = [(c, *L.quick_trade(me, x, c[0], c[1])) for c in cands]
+        pick = {}
+        fair_q = lambda c: sum(L.value(p) for p in c[0]) >= sum(L.value(p) for p in c[1]) - FAIR_TOL
+        for rank_key, ok in ((lambda q: min(q[1], q[2]), lambda q: True),
+                             (lambda q: q[1], lambda q: q[2] >= -0.015),
+                             (lambda q: q[1], lambda q: q[2] >= -0.01 and fair_q(q[0]))):
+            for q in sorted((q for q in quick if ok(q)), key=lambda q: -rank_key(q))[:MAX_EXACT // 3]:
+                pick[(tuple(q[0][0]), tuple(q[0][1]))] = q[0]
+        print(f"  (grosse Suche: {len(cands)} Trades grob vorgefiltert, {len(pick)} davon genau durchgerechnet)")
+        cands = list(pick.values())
+    results = [(give, get, L.trade(me, x, give, get)) for give, get in cands]
+
+    shown = []
+    for title, chosen in pick_options(drop_redundant(results), top=args.top):
+        print(f"\n== {title} ==")
+        if not chosen:
+            print("  (keine Option erfüllt das)")
+        for n, (give, get, r) in enumerate(chosen, 1):
+            print(f"  [{len(shown) + 1}] {' + '.join(L.model.names[i] for i in give)}  gegen  {' + '.join(L.model.names[i] for i in get)}")
+            print(describe(L, x, give, get, r)); print()
+            shown.append((give, get, r))
+    if not shown:
+        print("\nKein Trade mit diesen Einschränkungen verbessert dein Team. Mehr Spieler zulassen (--give 1-3 --get 1-2) oder weniger behalten (--keep).")
+        return
+    give, get, r = shown[0]
+    gs, ts = " + ".join(L.model.names[i] for i in give), " + ".join(L.model.names[i] for i in get)
+    print("== Nachricht an den Manager (Vorschlag zu Option [1]) ==")
+    print(f"  Hallo, ich würde dir {gs} für {ts} anbieten.")
+    print(f"  Für dich: {gs} bringt dir in den Kategorien {cat_delta_text(r['cat_x'], 3)} (Veränderung deiner Wochen-Gewinnchance je Kategorie in Prozentpunkten),")
+    print(f"  insgesamt {100 * r['d_x']:+.1f} Prozentpunkte Siegchance pro Woche nach meiner Rechnung.")
+    print("  Ist das etwas für dich?")
+    print("\n== So ändern sich eure Werte bei Option [1] (erwartete Wochensummen) ==")
+    print(f"  {'':8}{'du jetzt':>12}{'du danach':>12}{x[:14]:>16}{'danach':>10}")
+    for j, c in enumerate(CATN):
+        a0, a1, b0, b1 = L.mom[me][0][j], r["mom_me"][0][j], L.mom[x][0][j], r["mom_x"][0][j]
+        f = "{:>12.3f}{:>12.3f}{:>16.3f}{:>10.3f}" if c in ("FG_PCT", "FT_PCT", "PTS_MIN") else "{:>12.1f}{:>12.1f}{:>16.1f}{:>10.1f}"
+        print(f"  {engine.LABEL[c]:<8}" + f.format(a0, a1, b0, b1))
+    print(f"  Siegchance/Woche: du {100 * L.base[me]:.1f}% -> {100 * (L.base[me] + r['d_me']):.1f}%   ·   {x} {100 * L.base[x]:.1f}% -> {100 * (L.base[x] + r['d_x']):.1f}%")
 
 
 def main() -> int:
@@ -475,7 +616,12 @@ def main() -> int:
     r = sub.add_parser("refresh"); r.add_argument("--file")
     sub.add_parser("rank"); sub.add_parser("suggest"); sub.add_parser("all")
     o = sub.add_parser("offer"); o.add_argument("--team", required=True); o.add_argument("--asks", required=True, help='deine Spieler, nach denen gefragt wird, mit ; getrennt')
-    w = sub.add_parser("want"); w.add_argument("player")
+    w = sub.add_parser("want"); w.add_argument("player", help='Wunschspieler, mehrere vom selben Team mit ; getrennt')
+    w.add_argument("--give", help="wie viele deiner Spieler im Trade (Zahl oder Bereich, 1-3; Standard 1-2)")
+    w.add_argument("--get", help="wie viele Spieler du bekommst, Wunschspieler eingerechnet (Standard: nur die Wunschspieler; bis 3)")
+    w.add_argument("--keep", help="deine Spieler, die nicht angeboten werden, mit ; getrennt")
+    w.add_argument("--skip", help="Spieler des Partners, die nicht mitverlangt werden, mit ; getrennt")
+    w.add_argument("--top", type=int, default=2, help="Optionen je Kategorie (Standard 2)")
     args = ap.parse_args()
     if args.cmd == "refresh":
         refresh(args); return 0
