@@ -152,16 +152,21 @@ class PoolModel:
         return mu, sd
 
 
-def build_pool_model(df: pd.DataFrame, rules: Rules | None = None, rate: dict | None = None) -> PoolModel:
+def build_pool_model(df: pd.DataFrame, rules: Rules | None = None, rate: dict | None = None, games=None) -> PoolModel:
     """Build the array view from a table that carries per-game means (M_<raw>), per-game stds
     (S_<counting cat>, SI_FG / SI_FT / SI_PPM for the ratio impacts), AVAIL and POS_ELIGIBLE_STR."""
     rules = rules or Rules()
     df = df.reset_index(drop=True)
-    g = rules.games_per_week
     a = df["AVAIL"].clip(0.05, 1.0).to_numpy(float)
-    p_team = g / 4.0
-    var_g = g * a * (1 - a) + 4 * p_team * (1 - p_team) * a ** 2         # Var(games played in a week)
-    eg = g * a                                                           # E[games played in a week]
+    if games is None:                      # season-long view: an average week
+        g = rules.games_per_week
+        p_team = g / 4.0
+        var_g = g * a * (1 - a) + 4 * p_team * (1 - p_team) * a ** 2     # Var(games played in a week)
+        eg = g * a                                                       # E[games played in a week]
+    else:                                  # one specific week: each player's team plays `games[i]` games, the count is known
+        g = np.asarray(games, float)
+        var_g = g * a * (1 - a)
+        eg = g * a
 
     m = {r: df["M_" + r].to_numpy(float) for r in RAW}
     if rate is None:      # league rate per ratio category = pooled numerator / pooled denominator

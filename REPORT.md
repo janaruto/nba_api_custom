@@ -215,14 +215,14 @@ geringer erwarteter Spielzahl zu Buche (49, 44, 44 Spiele **[N8]**).
 ## 10. Draft-Abend: Vorgehen
 
 **Am Tag vorher (einmalig, rund 15 Minuten):**
-1. Notebook neu laufen lassen (rund 9 Minuten): `fantasy_draft_2026_27_v4_engine.ipynb`. Das aktualisiert Rosters, Trades und die Projektionen.
+1. Notebook neu laufen lassen (rund 9 Minuten): `.venv/bin/python -m nbconvert --to notebook --execute --inplace fantasy_draft_2026_27_v4_engine.ipynb`. Das aktualisiert Rosters, Trades und die Projektionen.
 2. Chrome: Tampermonkey mit dem Skript `draft_app/espn_bridge.user.js` (Version 0.2, nur ein Eintrag im Dashboard) und die Chrome-Einstellung „Benutzerskripts zulassen“.
 
 **Am Draft-Abend (zwei Minuten vor Beginn):**
 ```bash
-conda activate nba-env
 ./draft_app/start_draft_night.sh --reset
 ```
+Das Skript nimmt die native Umgebung `.venv` im Repo (Apple Silicon). Die frühere conda-Umgebung `nba-env` war für Intel gebaut und läuft ohne Rosetta nicht mehr. Neu anlegen: `/usr/local/bin/python3 -m venv .venv`, dann `.venv/bin/python -m pip install numpy==2.2.6 pandas==2.3.3 streamlit==1.64.0 pyarrow pytest requests openpyxl matplotlib nbconvert nbformat ipykernel jupyter_client` und `.venv/bin/python -m pip install -e .`.
 Das Skript aktualisiert den ESPN-Verletzungsstatus (`refresh_injuries.py`), leert das Draft-Log (`--reset`, nur vor dem echten Draft), startet den Empfänger und die App (`http://localhost:8502`). Strg+C beendet beides. Dann den ESPN-Draft-Room in Chrome öffnen: unten links muss das Badge „Draft-Room erkannt ✓“ zeigen.
 
 **Verletzte Spieler.** Hat ESPN einen Spieler auf OUT gesetzt (aktuell 13, u. a. Ingram), zieht das Modell 25 erwartete Spiele ab (`availability.py`, `OUT_GAMES_LOST`). Das ist eine Annahme, keine Messung. In der App kannst du unter „Verletzung / erwartete Spiele anpassen“ für einzelne Spieler die Spiele selbst festlegen. Wer täglich fraglich ist, wird nicht angepasst. Nachrichten bis kurz vor dem Draft holst du mit `python draft_app/refresh_injuries.py`, die App liest die Datei ohne Neustart.
@@ -236,6 +236,20 @@ Das Skript aktualisiert den ESPN-Verletzungsstatus (`refresh_injuries.py`), leer
    der Optimierer rechnet das ein.
 6. Nach rund 20 Picks lohnt ein Blick auf den Zielkader: weicht er stark vom Anfangs-Kader ab, ist das Absicht, nicht ein Fehler.
 7. Centers im Auge behalten (Maximum 4). Die App berücksichtigt das, aber ein Center mehr in Reserve engt die Optionen ein.
+
+### Wochen-Aufstellung (18. Oktober)
+
+`python draft_app/weekly_lineup.py --week N` schlägt für jedes Matchup die zehn Starter vor. Das Skript zählt, wie viele Spiele das NBA-Team jedes Spielers in der
+Matchup-Woche hat (Spielplan über `nba_api`, wegen der wöchentlichen Aufstellung zählt ein Vier-Spiele-Spieler etwa doppelt so viel wie ein Zwei-Spiele-Spieler),
+multipliziert mit seiner Verfügbarkeit (ESPN OUT zählt als 0) und seinem Wert pro Spiel, rechnet die Kategorien beider Teams und wählt unter allen legalen Zehnern
+(Positionsplätze, höchstens 4 Center) den mit der höchsten Siegchance gegen die vermutliche Aufstellung des Gegners (sein bestes Zehner). Die Ausgabe zeigt Kader,
+Start/Bank mit Platz, Spiele, erwartete Wochensummen, Gewinnchance je Kategorie und die nächstbesten Änderungen.
+- **Gegner und Daten** stehen in `draft_app/league_schedule.json` (von der ESPN-Seite „League Schedule“ gelesen: 18 Matchups, Woche 1 vom 20. bis 25. Oktober, Woche 18 vom
+  15. bis 28. Februar, danach Playoffs). Ohne `--week` geht `--opponent "Teamname"` für den kommenden Montag bis Sonntag.
+- **Kader** stehen in `draft_app/league_rosters.json` (mit `--init-rosters` aus dem Draft-Log erzeugt). **Nach Trades, Adds und Drops von Hand anpassen**, sonst rechnet das
+  Skript mit dem Draft-Stand.
+- **Grenzen:** Die Aufstellung des Gegners ist geraten (sein bestes Zehner), Tagesverletzungen während der Woche kennt das Skript nicht, und vor jedem Lauf sollte
+  `python draft_app/refresh_injuries.py` die ESPN-Verletzungen aktualisieren.
 
 ### Anbindung an den ESPN-Draft-Room (getestet im ESPN-Übungsdraft, 11. Oktober)
 
@@ -265,6 +279,18 @@ Die Anbindung liest nur mit, sie klickt nichts in ESPN und bietet nicht für dic
   ESPN-Rang in der App ist nur die Vorbelegung, solange die Anbindung keinen Spieler meldet.
 
 ---
+
+### Mischung mit ESPNs Projektion (16. Oktober)
+
+Die erwarteten Werte pro Spiel (PTS, REB, AST, STL, BLK, 3PM, FGM, FGA, FTM, FTA, Minuten, DD) sind jetzt ein Mittel aus 50 % Modell und 50 % ESPNs eigener
+2027-Projektion (`ESPN_BLEND_W = 0.5` in Zelle 6 des Notebooks; 0 schaltet sie ab). ESPN liefert sie für rund 350 Spieler, für alle anderen gilt nur das Modell.
+- **Doppel-Doppel.** ESPN projiziert keine DD (immer 0,0). Sie werden aus ESPNs Statline abgeleitet: eine logistische Regression auf vier Saisons Spielprotokolle
+  (sortierte Durchschnitte von PTS/REB/AST/STL/BLK; Fehler bei Saisons, die nicht zum Anpassen gedient haben, rund 0,03 bei einer Streuung von 0,155 zwischen Spielern).
+  Dieser Wert wird wie die anderen Zahlen mit dem Modell-DD gemittelt.
+- **Spiele bleiben die des Modells.** ESPNs Spielzahl ist optimistisch (Jokić 72) und kennt unsere Verletzungsbehandlung nicht.
+- **Wo sie sich unterscheiden:** ESPN ist im Schnitt etwa 4 % höher, und bei Spielern mit verletzungsgeprägter letzter Saison deutlich (z. B. Giannis, Davis, Young,
+  Siakam, Porter Jr.): das Modell stützt sich dort zu 70 % auf die wenigen Spiele von 2025-26. Die Mischung dämpft das.
+- **Was nicht geprüft ist:** ob die Mischung besser vorhersagt. Das liesse sich erst mit der Saison prüfen; 50 % ist eine Vorgabe, kein Messwert.
 
 ## 11. Offene Fragen
 

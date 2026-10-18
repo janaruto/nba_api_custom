@@ -158,3 +158,11 @@ draft_app/*.tmp
 # ESPN injury snapshot and the manual expected-games overrides (personal, regenerated)
 draft_app/injuries.json
 draft_app/availability_overrides.json
+
+# backup of the pool before the ESPN blend (to switch back if needed)
+draft_app/backup_pre_espn_blend/
+draft_app/excluded_players.json
+draft_app/league_rosters.json
+draft_app/league_schedule.json
+# personal settings (owner name in the ESPN draft room)
+draft_app/local_config.json

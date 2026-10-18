@@ -25,10 +25,21 @@ ESPN_URL = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027
 ESPN_FILTER = '{"players":{"limit":1500,"sortPercOwned":{"sortPriority":1,"sortAsc":false}}}'
 
 
+def _ssl_context():
+    """python.org builds of Python on macOS ship without root certificates: use certifi's (installed with requests)."""
+    try:
+        import ssl
+
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return None
+
+
 def fetch() -> list:
     req = urllib.request.Request(ESPN_URL, headers={"X-Fantasy-Filter": ESPN_FILTER, "Accept": "application/json",
                                                     "User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=90) as r:
+    with urllib.request.urlopen(req, timeout=90, context=_ssl_context()) as r:
         return json.loads(r.read().decode())
 
 

@@ -4,11 +4,13 @@
 #   ./draft_app/start_draft_night.sh            normal starten (Verletzungsstatus wird aktualisiert)
 #   ./draft_app/start_draft_night.sh --reset    zusätzlich das Draft-Log leeren (vor dem echten Draft einmal!)
 #
-# Voraussetzung: die conda-Umgebung ist aktiv (conda activate nba-env) oder PYTHON=/pfad/zu/python ist gesetzt.
+# Python: .venv/bin/python im Repo (falls vorhanden), sonst `python` der aktiven Umgebung, oder PYTHON=/pfad/zu/python.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PY="${PYTHON:-python}"
+if [[ -n "${PYTHON:-}" ]]; then PY="$PYTHON"
+elif [[ -x .venv/bin/python ]]; then PY=".venv/bin/python"      # native Apple-Silicon environment of this repo (see REPORT.md §10)
+else PY="python"; fi
 APP_PORT="${APP_PORT:-8502}"
 
 if [[ ! -f draft_app/player_pool.csv || ! -f draft_app/league_meta.json ]]; then

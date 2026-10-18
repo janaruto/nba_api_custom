@@ -38,6 +38,7 @@ APP_DIR = Path(__file__).parent
 sys.path.insert(0, str(APP_DIR))
 import availability  # noqa: E402
 import engine  # noqa: E402
+import names  # noqa: E402
 
 POOL_CSV = APP_DIR / "player_pool.csv"
 META_JSON = APP_DIR / "league_meta.json"
@@ -46,6 +47,7 @@ NOM_JSON = APP_DIR / "current_nomination.json"          # written by bridge.py: 
 UNRES_JSON = APP_DIR / "bridge_unresolved.json"          # sales the bridge could not match: enter by hand
 INJ_JSON = APP_DIR / "injuries.json"                     # written by refresh_injuries.py (ESPN status, outlook)
 OVR_JSON = APP_DIR / "availability_overrides.json"       # {player name: expected games}, edited in the app
+EXCL_JSON = APP_DIR / "excluded_players.json"            # players you never want: the plan skips them, no bid
 NOMINATION_MAX_AGE_S = 600
 
 st.set_page_config(page_title="Live Draft Assistant", layout="wide")
@@ -83,6 +85,13 @@ def load_injuries() -> dict:
         return json.loads(INJ_JSON.read_text()).get("players", {})
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def load_excluded() -> list:
+    try:
+        return list(json.loads(EXCL_JSON.read_text()))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
 
 def load_overrides() -> dict:
@@ -135,6 +144,16 @@ if "M_PTS" not in pool.columns or "field" not in meta:
 
 TEAM_NAMES = meta["team_names"]
 YOUR_TEAM = meta["your_team_name"]
+def _local_config() -> dict:
+    """Personal settings that must not be committed (draft_app/local_config.json, gitignored)."""
+    try:
+        return json.loads((APP_DIR / "local_config.json").read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+# the real ESPN draft room names bidders by owner (abbreviated, e.g. "J. Smith"), not by team: list yours in local_config.json
+YOUR_OWNER_NAMES = set(_local_config().get("owner_names", []))
 BUDGET = meta["budget_per_team"]
 ROSTER_SIZE = meta["roster_size"]
 TOTAL_DRAFTED = meta["total_drafted"]
@@ -144,8 +163,12 @@ MARKET_NAME = meta.get("market_model", "STRUCTURAL")
 
 pool = pool.reset_index(drop=True)
 # availability: the notebook's value, then ESPN's OUT status and manual overrides on top (availability.py)
-STAMP = (META_JSON.stat().st_mtime, _mt(INJ_JSON), _mt(OVR_JSON))
+STAMP = (META_JSON.stat().st_mtime, _mt(INJ_JSON), _mt(OVR_JSON), _mt(EXCL_JSON))
 pool = availability.adjust_pool(pool, load_injuries(), load_overrides())
+# players you never want to draft: the optimiser never plans them, bench suggestions skip them, no "pay up to"
+_excl_keys = {names.name_key(n) for n in load_excluded()}
+pool["EXCLUDED"] = pool["PLAYER_NAME"].map(names.name_key).isin(_excl_keys)
+pool.loc[pool["EXCLUDED"], "MODEL_OK"] = False
 PID2I = {int(p): i for i, p in enumerate(pool["PLAYER_ID"])}
 MODEL_OK = pool["MODEL_OK"].astype(bool).to_numpy()
 
@@ -317,6 +340,7 @@ available["ACTION"] = np.select(
     [~model_ok_av, available["YOUR_MAX_BID"] < MIN_BID, available["EDGE"] > 0.5, available["EDGE"] < -0.5],
     ["kein Modell", "skip", "BID UP", "let go"], default="at market")
 available.loc[available["BENCH_OPT"] & ~available.index.isin(in_target), "ACTION"] = "Bank"
+available.loc[available["EXCLUDED"], "ACTION"] = "gemieden"
 center_capped = your_centers >= MAX_CENTERS
 
 # ── ESPN draft-room order: who is called next ──────────────────────────────────────────────
@@ -352,7 +376,7 @@ def _live_status(r):
     if not CUR_FROM_ESPN or NOM is None or NOM.get("bid") is None:
         return None
     bid, lead, ceiling = int(NOM["bid"]), NOM.get("team") or "?", float(r["YOUR_MAX_BID"])
-    if lead == YOUR_TEAM:
+    if lead == YOUR_TEAM or lead in YOUR_OWNER_NAMES:
         return "success", f"DU FÜHRST mit \\${bid}. Nur weiter bieten, wenn überboten wird (Limit \\${ceiling:,.0f})."
     if ceiling >= MIN_BID and ceiling >= bid + 1:
         return "success", f"BIETEN bis \\${ceiling:,.0f}. Aktuell \\${bid} ({lead}), nächstes Gebot \\${bid + 1}."
@@ -362,6 +386,8 @@ def _live_status(r):
 def _verdict(r) -> tuple[str, str]:
     """(level, text) for the one-line recommendation under a player."""
     ceiling, live = float(r["YOUR_MAX_BID"]), float(r["LIVE_$"])
+    if bool(r.get("EXCLUDED")):
+        return "error", "Von dir ausgeschlossen: nicht bieten. Der Optimierer plant ihn nicht ein."
     if str(r.get("ACTION")) == "Bank":
         rk = r.get("BENCH_RANK")
         return "success", (f"**Bank-Kandidat" + (f" (Rang {int(rk)})" if pd.notna(rk) else " (Option)") + f":** bis \\${ceiling:,.0f} bieten, nicht mehr. "
@@ -674,6 +700,17 @@ with st.expander("Spieler nicht in der Liste? (z.B. ein Rookie, den ESPN aufruft
                         "unlisted": True, "is_center": bool(u_c)})
             save_log(log)
             st.rerun()
+
+def _save_excluded() -> None:
+    chosen = [_ex_labels_all[l] for l in st.session_state.get("ex_sel", []) if l in _ex_labels_all]
+    EXCL_JSON.write_text(json.dumps(chosen, indent=1, ensure_ascii=False))
+
+
+_ex_labels_all = {ascii_label(n): n for n in pool["PLAYER_NAME"]}
+st.session_state.setdefault("ex_sel", [ascii_label(n) for n in load_excluded() if ascii_label(n) in _ex_labels_all])
+with st.expander("Spieler meiden (nie draften)"):
+    st.caption("Diese Spieler plant der Optimierer nie ein, sie kommen nicht in die Bank-Vorschläge, und es gibt kein „Zahle bis“. Gilt sofort.")
+    st.multiselect("Gemieden", sorted(_ex_labels_all), key="ex_sel", on_change=_save_excluded, placeholder="tippen: z.B. embiid …")
 
 with st.expander("Verletzung / erwartete Spiele anpassen"):
     st.caption(f"ESPN-Status OUT zieht automatisch {availability.OUT_GAMES_LOST} Spiele ab (eine Annahme, keine Messung). Hier legst du für einen "
