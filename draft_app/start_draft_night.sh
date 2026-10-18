@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [[ -n "${PYTHON:-}" ]]; then PY="$PYTHON"
-elif [[ -x .venv/bin/python ]]; then PY=".venv/bin/python"      # native Apple-Silicon environment of this repo (see REPORT.md §10)
+elif [[ -x .venv/bin/python ]]; then PY=".venv/bin/python"      # native Apple-Silicon environment of this repo (siehe README.md, "Einrichtung")
 else PY="python"; fi
 APP_PORT="${APP_PORT:-8502}"
 

@@ -1,7 +1,7 @@
 [project]
 name = "nba_api"
 version = "1.11.4"
-description = "An API Client package to access the APIs for NBA.com"
+description = "NBA fantasy tooling (draft engine, live draft assistant, weekly lineups, league tools) on top of the nba_api client"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [ {name = "Swar Patel", email = "<swar.m.patel@gmail.com>"}]
@@ -40,109 +40,24 @@ dependencies = [
 
 readme = "README.md"
 
+[project.optional-dependencies]
+fantasy = [
+    "streamlit >=1.38",
+    "certifi",
+]
+dev = [
+    "pytest >=8.3",
+    "ipykernel",
+    "nbconvert",
+]
+
 [project.urls]
-    repository = "https://github.com/swar/nba_api"
-    "Bug Tracker" = "https://github.com/swar/nba_api/issues"
-    documentation = "https://github.com/swar/nba_api/blob/master/README.md"
+    repository = "https://github.com/janaruto/nba_api_custom"
+    upstream = "https://github.com/swar/nba_api"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.3.3"
-pytest-cov = "^4.0"
-python-semantic-release = "^9.0.0"
-pandas = [
-    {version = ">=2.2.0", python = ">=3.12"},
-    {version = "<2.2.0", python = "<3.12"}
-]
-ruff = "^0.15.2"
-pre-commit = "^4.0.0"
-pytest-recording = "^0.13.4"
-
 [tool.pytest.ini_options]
-markers = [
-    "live: test makes real HTTP requests to the NBA Stats API; skip in CI unless cassettes are present",
-    "vcr: test uses a pre-recorded VCR cassette and does not require network access",
-    "canary: lightweight smoke test suitable for rapid health checks",
-    "deprecated_endpoint: marks a test for an endpoint known to be deprecated or unstable",
-]
-
-[tool.ruff]
-line-length = 88
-target-version = "py310"
-
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes (unused imports, undefined names, etc.)
-    "I",   # isort (import ordering)
-    "UP",  # pyupgrade (modernize syntax for target Python version)
-    "B",   # flake8-bugbear (common bugs and design issues)
-    "C4",  # flake8-comprehensions (simplify comprehensions)
-    "SIM", # flake8-simplify (simplify code patterns)
-]
-ignore = [
-    "E501", # line too long — handled by ruff format
-]
-
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"] # re-exports are intentional in __init__.py
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-docstring-code-format = true
-
-[tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"]
-build_command = "poetry build"
-dist_path = "dist/"
-upload_to_pypi = true
-upload_to_release = true
-commit_subject = "chore: release v{version}"
-commit_message = "chore: release v{version}\n\n{changelog}"
-tag_format = "v{version}"
-changelog_placeholder = "# NBA API Change Log"
-
-[tool.semantic_release.remote]
-type = "github"
-token = { env = "GITHUB_TOKEN" }
-
-[tool.semantic_release.branches.master]
-match = "(master|main)"
-prerelease = false
-
-[tool.semantic_release.branches.release]
-match = "(release|release/.*)"
-prerelease = false
-
-[tool.semantic_release.branches.test]
-match = "test-release"
-prerelease = true
-prerelease_token = "rc"
-
-[tool.semantic_release.commit_parser_options]
-allowed_tags = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "style", "refactor", "test"]
-minor_tags = ["feat"]
-patch_tags = ["fix", "perf"]
-
-[tool.semantic_release.changelog]
-exclude_commit_patterns = [
-  "^Bump .*",
-  "^Update .*", 
-  "^Merge pull request.*"
-]
-changelog_file = "CHANGELOG.MD"
-
-[tool.semantic_release.changelog.environment]
-block_start_string = "{%"
-block_end_string = "%}"
-variable_start_string = "{{"
-variable_end_string = "}}"
-comment_start_string = "{#"
-comment_end_string = "#}"
-trim_blocks = false
-lstrip_blocks = false
+testpaths = ["draft_app/tests"]
