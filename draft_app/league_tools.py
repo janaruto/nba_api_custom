@@ -96,7 +96,9 @@ def credentials():
             s2, swid = a.get("espn_s2"), a.get("swid")
         except (json.JSONDecodeError, AttributeError):                  # e.g. a saved league page that was named espn_auth.json
             return None
-    return (s2.strip(), swid.strip()) if s2 and swid else None
+    if not (s2 and swid) or "EINFUEGEN" in s2 + swid:                   # the template file was created but not filled in yet
+        return None
+    return s2.strip(), swid.strip()
 
 
 def fetch_with_cookies(creds=None) -> dict | None:

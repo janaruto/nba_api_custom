@@ -241,6 +241,8 @@ def test_credentials_come_from_env_or_file_and_a_league_file_is_not_a_credential
     assert lt.credentials() is None
     (no_files / "espn_auth.json").write_text(json.dumps({"espn_s2": SECRET_S2, "swid": SECRET_SWID}))
     assert lt.credentials() == (SECRET_S2, SECRET_SWID)
+    (no_files / "espn_auth.json").write_text(json.dumps({"espn_s2": "HIER_ESPN_S2_EINFUEGEN", "swid": "{HIER_SWID_EINFUEGEN}"}))   # unfilled template
+    assert lt.credentials() is None
     monkeypatch.setenv("ESPN_S2", "fromenv"); monkeypatch.setenv("ESPN_SWID", "{x}")
     assert lt.credentials() == ("fromenv", "{x}")
 
