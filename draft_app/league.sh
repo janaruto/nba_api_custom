@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Liga-Werkzeuge:
+# Liga-Werkzeuge (die Kader werden vor jeder Auswertung live von ESPN geholt, sobald `login` einmal eingerichtet ist):
+#   ./draft_app/league.sh login                                 einmalig: ESPN-Zugang für den automatischen Kader-Abruf einrichten
 #   ./draft_app/league.sh all                                   Rosters aktualisieren + Rangliste + Trade-Ideen
 #   ./draft_app/league.sh refresh | rank | suggest
 #   ./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray"    jemand fragt nach deinem Spieler: was kannst du zurückverlangen?

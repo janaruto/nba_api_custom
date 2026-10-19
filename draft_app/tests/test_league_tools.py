@@ -9,6 +9,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import league_tools as lt  # noqa: E402
 
+REAL_FETCH = lt.fetch_with_cookies                                              # before any test patches it
+
 
 def espn(teams: dict) -> dict:
     return {"teams": [{"id": i + 1, "name": n, "roster": {"entries": [{"playerPoolEntry": {"player": {"fullName": p}}} for p in ps]}}
@@ -47,14 +49,14 @@ def no_files(paths, monkeypatch):
     monkeypatch.setattr(lt, "LEAGUE_JSON", paths / "espn_league.json")
     monkeypatch.setattr(lt, "AUTH_JSON", paths / "espn_auth.json")
     monkeypatch.setattr(lt.Path, "home", classmethod(lambda cls: paths / "home"))
-    monkeypatch.setattr(lt, "fetch_with_cookies", lambda: None)
+    monkeypatch.setattr(lt, "fetch_with_cookies", lambda creds=None: None)
     return paths
 
 
 def test_refresh_without_a_source_explains_what_to_do(no_files):
     with pytest.raises(SystemExit) as e:
         lt.refresh(types.SimpleNamespace(file=None))
-    assert "espn_league.json" in str(e.value) and "Geprüft" in str(e.value)
+    assert "espn_league.json" in str(e.value) and "login" in str(e.value)
 
 
 def test_a_missing_explicit_file_is_named(no_files):
@@ -183,3 +185,90 @@ def test_refresh_warns_when_the_file_is_old_and_shows_espns_trade_counter(no_fil
     _age(f, 0.1)
     lt.refresh(types.SimpleNamespace(file=str(f)))
     assert "ACHTUNG" not in capsys.readouterr().out                                 # a fresh file gets no warning
+
+
+# ── live fetch from ESPN (mocked: no network, no real cookies) ───────────────────────────────────────
+SECRET_S2, SECRET_SWID = "AEBsecretvalue123", "{11111111-2222-3333-4444-555555555555}"
+
+
+def test_live_data_is_used_first_saved_locally_and_never_flagged_as_old(no_files, monkeypatch, capsys):
+    stale = no_files / "espn_league.json"; stale.write_text(json.dumps(espn({"A": ["OLD1"], "B": ["OLD2"]}))); _age(stale, 30)
+    monkeypatch.setattr(lt, "fetch_with_cookies", lambda creds=None: espn({"A": ["P1", "P3"], "B": ["P2"]}))
+    new = lt.refresh(types.SimpleNamespace(file=None))
+    out = capsys.readouterr().out
+    assert new["A"] == ["P1", "P3"] and "live von ESPN" in out and "ACHTUNG" not in out
+    assert json.loads(stale.read_text())["teams"][0]["roster"]["entries"][1]["playerPoolEntry"]["player"]["fullName"] == "P3"   # local copy refreshed
+
+
+def test_if_espn_refuses_the_saved_file_is_used_and_the_user_is_told(no_files, monkeypatch, capsys):
+    f = no_files / "espn_league.json"; f.write_text(json.dumps(espn({"A": ["P1"], "B": ["P2"]}))); _age(f, 30)
+    def refuse(creds=None):
+        raise lt.LeagueFetchError("ESPN lehnt die Zugangsdaten ab (HTTP 401), vermutlich abgelaufen: `./draft_app/league.sh login` erneut ausführen")
+    monkeypatch.setattr(lt, "fetch_with_cookies", refuse)
+    new = lt.refresh(types.SimpleNamespace(file=None))
+    out = capsys.readouterr().out
+    assert new["A"] == ["P1"] and "Live-Abruf bei ESPN nicht möglich" in out and "HTTP 401" in out and "ACHTUNG" in out
+
+
+def test_offline_switch_and_explicit_file_skip_the_live_fetch(no_files, monkeypatch):
+    f = no_files / "espn_league.json"; f.write_text(json.dumps(espn({"A": ["P1"], "B": ["P2"]})))
+    monkeypatch.setattr(lt, "fetch_with_cookies", lambda creds=None: (_ for _ in ()).throw(AssertionError("must not call ESPN")))
+    monkeypatch.setenv("LEAGUE_OFFLINE", "1")
+    lt.refresh(types.SimpleNamespace(file=None))
+    monkeypatch.delenv("LEAGUE_OFFLINE")
+    lt.refresh(types.SimpleNamespace(file=str(f)))
+
+
+def test_http_errors_are_explained_without_leaking_the_cookies(no_files, monkeypatch):
+    monkeypatch.setattr(lt, "LOCAL_JSON", no_files / "local_config.json")
+    (no_files / "local_config.json").write_text(json.dumps({"league_id": 4242}))
+    def boom(req, **kw):
+        raise lt.urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+    monkeypatch.setattr(lt.urllib.request, "urlopen", boom)
+    with pytest.raises(lt.LeagueFetchError) as e:
+        REAL_FETCH((SECRET_S2, SECRET_SWID))
+    assert "401" in str(e.value) and "login" in str(e.value) and SECRET_S2 not in str(e.value) and "1111" not in str(e.value)
+    monkeypatch.setattr(lt.urllib.request, "urlopen", lambda req, **kw: (_ for _ in ()).throw(OSError(f"cookie {SECRET_S2}")))
+    with pytest.raises(lt.LeagueFetchError) as e2:
+        REAL_FETCH((SECRET_S2, SECRET_SWID))
+    assert SECRET_S2 not in str(e2.value)                                           # only the exception TYPE is shown
+
+
+def test_credentials_come_from_env_or_file_and_a_league_file_is_not_a_credential_file(no_files, monkeypatch):
+    monkeypatch.delenv("ESPN_S2", raising=False); monkeypatch.delenv("ESPN_SWID", raising=False)
+    assert lt.credentials() is None
+    (no_files / "espn_auth.json").write_text(json.dumps(espn({"A": ["P1"], "B": ["P2"]})))          # the old mistake: league data under this name
+    assert lt.credentials() is None
+    (no_files / "espn_auth.json").write_text(json.dumps({"espn_s2": SECRET_S2, "swid": SECRET_SWID}))
+    assert lt.credentials() == (SECRET_S2, SECRET_SWID)
+    monkeypatch.setenv("ESPN_S2", "fromenv"); monkeypatch.setenv("ESPN_SWID", "{x}")
+    assert lt.credentials() == ("fromenv", "{x}")
+
+
+def test_login_checks_the_values_stores_them_privately_and_never_prints_them(no_files, monkeypatch, capsys):
+    import getpass, stat
+    answers = iter([f'"{SECRET_S2}"', SECRET_SWID.strip("{}")])                      # pasted with quotes / without braces
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(answers))
+    seen = {}
+    def accept(creds=None):
+        seen["creds"] = creds
+        return espn({"A": ["P1"], "B": ["P2"]})
+    monkeypatch.setattr(lt, "fetch_with_cookies", accept)
+    lt.cmd_login()
+    out = capsys.readouterr().out
+    auth = no_files / "espn_auth.json"
+    assert json.loads(auth.read_text()) == {"espn_s2": SECRET_S2, "swid": SECRET_SWID} and seen["creds"] == (SECRET_S2, SECRET_SWID)
+    assert stat.S_IMODE(auth.stat().st_mode) == 0o600
+    assert SECRET_S2 not in out and "11111111" not in out and "OK:" in out and (no_files / "espn_league.json").exists()
+
+
+def test_login_with_rejected_values_stores_nothing(no_files, monkeypatch):
+    import getpass
+    answers = iter([SECRET_S2, SECRET_SWID])
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(answers))
+    def reject(creds=None):
+        raise lt.LeagueFetchError("ESPN lehnt die Zugangsdaten ab (HTTP 401), vermutlich abgelaufen")
+    monkeypatch.setattr(lt, "fetch_with_cookies", reject)
+    with pytest.raises(SystemExit) as e:
+        lt.cmd_login()
+    assert "Nicht gespeichert" in str(e.value) and not (no_files / "espn_auth.json").exists()

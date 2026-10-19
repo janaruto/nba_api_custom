@@ -55,7 +55,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 65 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 72 Tests, ohne Netzwerk
 ```
 
 | Aufgabe | Befehl |
@@ -63,6 +63,7 @@ python3 -m venv .venv
 | Daten holen, projizieren, Pool exportieren (rund 9 Minuten, danach zwischengespeichert in `cache/`) | `.venv/bin/python -m nbconvert --to notebook --execute --inplace fantasy_draft_2026_27_v4_engine.ipynb` |
 | Draft-Abend starten (Verletzungen aktualisieren, ESPN-Empfänger, App auf `http://localhost:8502`) | `./draft_app/start_draft_night.sh` (`--reset` leert vor dem echten Draft das Log) |
 | Aufstellung für Matchup-Woche N | `./draft_app/weekly.sh N` oder `./draft_app/weekly.sh --opponent "Teamname"` |
+| Einmalig: ESPN-Zugang für den automatischen Kader-Abruf einrichten (Abschnitt 10.4) | `./draft_app/league.sh login` |
 | Alle Kader aktualisieren, Rangliste, Trade-Ideen | `./draft_app/league.sh all` |
 | Jemand fragt nach deinem Spieler: was zurückverlangen? | `./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray"` |
 | Du willst einen Spieler: Angebote, Stat-Veränderung, Nachricht | `./draft_app/league.sh want "Evan Mobley"` |
@@ -88,7 +89,7 @@ Die persönlichen Dateien (Liga-ID, Eigentümername, Kader, ESPN-Liga-Daten) lie
 | `draft_app/league_tools.py`, `league.sh` | Kader aller Teams aktualisieren, Rangliste mit Siegchancen, Trade-Vorschläge, Angebote, Wunschspieler |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 65 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
+| `draft_app/tests/` | 72 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -123,7 +124,7 @@ Ratio-Kategorien (FG%, FT%, PPM) zählen als Team-Aggregat ΣZähler/ΣNenner, n
 |---|---|---|
 | stats.nba.com über `nba_api` | `LeagueGameLog` (Spielprotokolle, vier Saisons 2022-23 bis 2025-26), `CommonPlayerInfo` (Alter, Grösse, Geburtsdatum), `CommonTeamRoster` (Kader 2026-27), `ScheduleLeagueV2` (Spielplan) | öffentlich, drosselt Anfragen: gestaffelt mit Pausen, Zwischenspeicher in `cache/` |
 | ESPN Fantasy, Spielerliste (`lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/players?view=kona_player_info`) | Auktionswerte, Positions-Berechtigung (`eligibleSlots`), Verletzungsstatus, ESPN-Rang für H2H-Kategorien, **eigene Projektion** (Statistik-Quelle `102027`) | öffentlich, kein Login |
-| ESPN Liga-Daten (`.../leagues/<ID>?view=mRoster&view=mTeam`) | Kader aller Teams, Teamnamen | nur eingeloggt (ohne Login HTTP 401); der Weg ohne Zugangsdaten im Werkzeug ist „Seite im eingeloggten Browser speichern“ (Abschnitt 10.4) |
+| ESPN Liga-Daten (`.../leagues/<ID>?view=mRoster&view=mTeam`) | Kader aller Teams, Teamnamen | nur eingeloggt (ohne Login HTTP 401); automatisch mit deinen Cookies (`league.sh login`, einmalig) oder von Hand durch „Seite im eingeloggten Browser speichern“ (Abschnitt 10.4) |
 | ESPN-Draft-Room (Browser) | aufgerufener Spieler, Gebot, Verkäufe | Userscript liest nur mit (Abschnitt 10.2) |
 
 Beide inoffiziellen Schnittstellen können sich ohne Ankündigung ändern.
@@ -289,7 +290,7 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
 
 **Liga-Werkzeuge** (`league_tools.py`).
 
-* **Kader aktualisieren (`refresh`).** Liest ESPNs Liga-JSON, schreibt `league_rosters.json`, behält den alten Schlüssel eines umbenannten Teams („Unsupervised Chaos“ ↔ „Team 15“), meldet Trades, Neuverpflichtungen und Entlassungen seit dem letzten Stand.
+* **Kader aktualisieren (`refresh`).** Holt ESPNs Liga-JSON live (oder liest die gespeicherte Datei), schreibt `league_rosters.json`, behält den alten Schlüssel eines umbenannten Teams („Unsupervised Chaos“ ↔ „Team 15“), meldet Trades, Neuverpflichtungen und Entlassungen seit dem letzten Stand.
 * **Aufstellungen der Teams.** Jedes Team spielt im Modell seine beste Zehner-Aufstellung: Start mit der z-Summe der erwarteten Wochenbeiträge, danach dreimal abwechselnd Feld neu berechnen und je Team per Hügelklettern (Starter gegen Bankspieler, legal) verbessern.
 * **Rangliste.** Siegchance pro Woche = Mittel von `P(Matchup)` gegen jedes andere Team (6.5/6.6, ohne `τ`). Die Saison wird 3'000-mal simuliert: 18 Wochen mit zufälligen Paarungen (nicht dem echten Spielplan), Ergebnis je Paarung aus der Matchup-Wahrscheinlichkeit;
   daraus erwartete Siege, Top-4-Chance und Chance auf Platz 1. Das ist ein *Zustand-heute*-Modell mit durchschnittlichen Wochen; Verletzungen und Spielzahlen einzelner Wochen kommen nicht vor.
@@ -441,11 +442,12 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E18 | 17. Okt. | Draft-Room-Kopfzeilen zeigen Eigentümernamen statt Teamnamen → Umbenennung im Browser per eingeschleustem Script, Eigentümername lokal konfigurierbar | Im echten Raum (anders als im Übungsdraft) tauchten Namen doppelt auf | `local_config.json`, ungetrackt |
 | E19 | 17. Okt. | Geldbilanz zählt nur Teams mit offenen Plätzen; `solve_robust` | Endspiel mit \$8 für 8 Plätze erzeugte keinen legalen Kader | 6.8 Punkt 5 |
 | E20 | 18. Okt. | Wochen-Aufstellung: erschöpfende Suche über 286 Zehner, Gegner = sein bestes Zehner | Exakt und billig; die echte Aufstellung des Gegners ist unbekannt | Geraten, dokumentiert |
-| E21 | 18. Okt. | Kader per im Browser gespeicherter Liga-JSON (nicht per Cookie), Cookies nur optional | Keine Zugangsdaten im Werkzeug nötig; ESPN antwortet ohne Login mit 401 | Optional `ESPN_S2`/`ESPN_SWID` (lokal, nie gedruckt) |
+| E21 | 18. Okt. | Kader zuerst per im Browser gespeicherter Liga-JSON, Cookies nur optional | Keine Zugangsdaten im Werkzeug nötig; ESPN antwortet ohne Login mit 401 | Am 19. Okt. durch E26 ergänzt: die Datei ist nur noch der Rückfall |
 | E22 | 18. Okt. | Repo auf die Fantasy-Pipeline verkleinert (Upstream-Entwicklungsumgebung, ältere Notebooks, `REPORT.md` entfernt) | v2 und v3 schrieben dasselbe `player_pool.csv` im alten Format; ein versehentlicher Lauf hätte den v4-Export zerstört. Die Befunde stehen hier | Tag `archive/pre-cleanup` zeigt auf den vorherigen Stand |
 | E23 | 18. Okt. | „Fair“ = Wert (Mittel aus ESPN-Wert und Draft-Preis) ≥ Wert des Partners minus \$3 | Managers schauen auf ESPN-Werte und Preise; \$3 Toleranz für Rauschen | Faustregel |
 | E24 | 18. Okt. | Rookies/Neuzugänge in den Liga-Werkzeugen mit ESPNs Projektion bewerten | Bis zur ersten NBA-Spielzeit gibt es nichts Besseres; Auslassen verzerrte die Rangliste | Übergangslösung |
 | E25 | 18. Okt. | `want`: Trade-Grösse frei wählbar und mehrere Optionen statt „dem einen besten“ | Was „am besten“ ist, hängt vom Ziel ab (beide profitieren, mein Gewinn, Akzeptanz beim Manager); redundante Zugaben ohne Wirkung werden verworfen; grosse Suchen erst grob vorgefiltert | Näherung nur für die Vorauswahl, die Ausgabe ist immer genau gerechnet |
+| E26 | 19. Okt. | Kader live von ESPN holen (`league.sh login` einmalig, Cookies in `espn_auth.json`, Rechte 600), vor jeder Auswertung und vor der Wochen-Aufstellung | Das Speichern der Seite von Hand wurde nach einem Trade vergessen, und das Werkzeug zeigte dann „keine Veränderung“; die Eingabe der Werte macht der Nutzer selbst, sie werden nie gedruckt | Cookies laufen ab (dann Rückfall auf die gespeicherte Datei und Hinweis); Auslesen der Chrome-Cookies per Programm wurde bewusst nicht gebaut |
 
 ---
 
@@ -500,23 +502,26 @@ Ziel: Die App erfährt den aufgerufenen Spieler, das aktuelle Gebot und jeden Ve
 ### 10.3 Wochenroutine
 
 `./draft_app/weekly.sh N` (Woche aus `league_schedule.json`: 18 Matchups, Woche 1 vom 20. bis 25. Oktober, Woche 18 bis 28. Februar) oder `./draft_app/weekly.sh --opponent "Teamname"` für den kommenden Montag bis Sonntag.
-Das Skript aktualisiert zuerst die ESPN-Verletzungen. **Die Kader stehen in `league_rosters.json`**, die `./draft_app/league.sh refresh` nach Trades, Adds und Drops aus ESPNs Liga-Daten neu schreibt; sonst rechnet es mit dem Draft-Stand.
+Das Skript aktualisiert zuerst die ESPN-Verletzungen. **Die Kader stehen in `league_rosters.json`**; `weekly.sh` aktualisiert sie vor jeder Auswertung aus ESPNs Liga-Daten (Abschnitt 10.4), ohne eingerichteten Zugang und ohne frisch gespeicherte Datei rechnet es mit dem letzten bekannten Stand.
 
 ### 10.4 Liga-Werkzeuge: Quelle der Kader
 
-ESPNs Liga-Daten sind nur eingeloggt abrufbar. Der sichere Weg ohne Zugangsdaten im Werkzeug: im eingeloggten Chrome die Adresse
-`https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leagues/<Liga-ID>?view=mRoster&view=mTeam` öffnen und die Seite mit Cmd+S als **`draft_app/espn_league.json`** speichern.
-**`refresh` fragt ESPN nicht selbst ab, es liest nur diese gespeicherte Datei.** Nach jedem neuen Trade, Add oder Drop muss die Seite deshalb neu gespeichert werden (die alte Datei ersetzen), sonst bleibt der Stand stehen.
-Das Werkzeug hilft dabei: Es zeigt, wie alt die Datei ist, warnt ab 3 Stunden und druckt die Adresse; es zeigt ESPNs eigenen Trade-Zähler aus der Datei (`transactionCounter`), an dem man sieht, ob ein Trade schon enthalten ist;
-und es meldet „Keine Veränderung“, wenn nichts neu ist. Es erkennt die Datei auch unter falschem Namen (mit einer ESPN-Teamliste in `draft_app/espn_auth.json` oder als `*espn*`/`*<Liga-ID>*` in `~/Downloads` und `~/Desktop`, auch ohne Endung
-oder als „Webseite, nur HTML“ gespeichert); gibt es mehrere, gewinnt die **neueste**. Cookie-Dateien hält es nie für Liga-Daten.
-Optional lassen sich ESPN-Cookies (`ESPN_S2`, `ESPN_SWID` als Umgebungsvariablen oder in `draft_app/espn_auth.json`) hinterlegen, um direkt abzurufen; sie bleiben lokal, werden nie gedruckt und nie committet.
+**Automatisch (empfohlen): einmal einrichten.** `./draft_app/league.sh login` fragt die zwei ESPN-Cookie-Werte `espn_s2` und `SWID` ab (Chrome: auf fantasy.espn.com eingeloggt, Rechtsklick › Untersuchen › Application › Cookies › `https://fantasy.espn.com`),
+prüft sie gegen ESPN und legt sie in `draft_app/espn_auth.json` ab (Rechte 600, von git ignoriert, die Eingabe bleibt unsichtbar). Sie stehen nie im Terminal-Verlauf, im Repo oder in einer Ausgabe; die Werte gehen nur in die Anfrage an ESPN. Alternativ lassen sie sich als Umgebungsvariablen `ESPN_S2` und `ESPN_SWID` setzen.
+Danach holen **`refresh`, `all`, `rank`, `suggest`, `offer`, `want` und `weekly.sh` die Kader aller Teams vor jeder Auswertung live von ESPN** (eine Anfrage, rund eine Sekunde) und melden Trades, Adds und Drops seit dem letzten Lauf. Die Antwort wird als `draft_app/espn_league.json` mitgespeichert.
+Der Zugang läuft irgendwann ab; dann sagt das Werkzeug es (HTTP 401) und rechnet mit der letzten gespeicherten Datei weiter, und `league.sh login` erneuert ihn. Mit `LEAGUE_OFFLINE=1` überspringt man den Live-Abruf.
+
+**Von Hand (Rückfall ohne Zugang).** Im eingeloggten Chrome `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leagues/<Liga-ID>?view=mRoster&view=mTeam` öffnen und die Seite mit Cmd+S als **`draft_app/espn_league.json`** speichern
+(die alte Datei ersetzen). Ohne Zugang liest `refresh` nur diese gespeicherte Datei und fragt ESPN nicht selbst ab; nach jedem Trade, Add oder Drop muss sie deshalb neu gespeichert werden.
+Das Werkzeug zeigt dann das Alter der Datei, warnt ab 3 Stunden, druckt die Adresse, zeigt ESPNs eigenen Trade-Zähler aus der Datei (`transactionCounter`; daran sieht man, ob ein Trade schon enthalten ist) und meldet „Keine Veränderung“, wenn nichts neu ist.
+Es erkennt die Datei auch unter falschem Namen (mit einer ESPN-Teamliste in `draft_app/espn_auth.json` oder als `*espn*`/`*<Liga-ID>*` in `~/Downloads` und `~/Desktop`, auch ohne Endung oder als „Webseite, nur HTML“ gespeichert); gibt es mehrere, gewinnt die **neueste**.
+Cookie-Dateien hält es nie für Liga-Daten.
 
 ---
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 65 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 72 Tests):
 
 | Datei | Prüft |
 |---|---|

@@ -1,6 +1,7 @@
 """
 League tools: current rosters, rankings, trade ideas, offers and wish players
 =============================================================================
+    python draft_app/league_tools.py login                                    # once: set up the automatic fetch from ESPN
     python draft_app/league_tools.py refresh                                  # rosters of ALL teams as they are now + trades since last time
     python draft_app/league_tools.py rank                                     # rankings with win chances (simulated season)
     python draft_app/league_tools.py suggest                                  # trade ideas for you
@@ -10,11 +11,14 @@ League tools: current rosters, rankings, trade ideas, offers and wish players
                                                                               #     --keep "A;B" (never offer them), --skip "C" (do not ask for them), --top N
     python draft_app/league_tools.py all                                      # refresh + rank + suggest
 
-Where the rosters come from (`refresh`), in this order:
-  1. draft_app/espn_league.json  - the league's roster data saved from YOUR browser (no password or cookie ever touches this tool):
+Where the rosters come from (`refresh`, and automatically before rank / suggest / offer / want / all and the weekly lineup), in this order:
+  1. LIVE from ESPN, if you ran `login` once: your ESPN cookies (espn_s2, SWID) are kept in draft_app/espn_auth.json (mode 600, git-ignored) or in
+     the environment (ESPN_S2, ESPN_SWID). Nothing is ever printed, and nothing leaves this computer except the request to ESPN itself. The answer is also
+     saved as draft_app/espn_league.json. If ESPN refuses (cookies expired) or is unreachable, the tool says so and falls back to 2.
+  2. draft_app/espn_league.json (or the newest ESPN league file in ~/Downloads / ~/Desktop): the league data saved from YOUR browser:
      open  https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leagues/<leagueId>?view=mRoster&view=mTeam
-     while logged in to ESPN, save the page (Cmd+S) as draft_app/espn_league.json. The league id is in local_config.json.
-  2. optional: ESPN login cookies in the environment (ESPN_S2, ESPN_SWID) or in draft_app/espn_auth.json (gitignored), to fetch it directly.
+     while logged in to ESPN and save the page (Cmd+S) as draft_app/espn_league.json. The league id is in local_config.json.
+     `refresh --file X` reads only that file; LEAGUE_OFFLINE=1 skips the live fetch.
 Players the model has no line for (rookies, new signings) are evaluated with ESPN's own projection (espn_extra.py); players ESPN does not project either are ignored and listed.
 All numbers are model estimates with the same assumptions as the rest of this project (ESPN blend, injuries, season-average weeks).
 """
@@ -27,6 +31,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -78,20 +83,74 @@ def _ssl():
         return None
 
 
-def fetch_with_cookies() -> dict | None:
+class LeagueFetchError(Exception):
+    """The live fetch from ESPN failed; the message is safe to print (it never contains the cookies)."""
+
+
+def credentials():
+    """(espn_s2, swid) from the environment or draft_app/espn_auth.json, else None. The values are never printed."""
     s2, swid = os.environ.get("ESPN_S2"), os.environ.get("ESPN_SWID")
     if not (s2 and swid) and AUTH_JSON.exists():
-        a = json.loads(AUTH_JSON.read_text()); s2, swid = a.get("espn_s2"), a.get("swid")
-    if not (s2 and swid):
+        try:
+            a = json.loads(AUTH_JSON.read_text())
+            s2, swid = a.get("espn_s2"), a.get("swid")
+        except (json.JSONDecodeError, AttributeError):                  # e.g. a saved league page that was named espn_auth.json
+            return None
+    return (s2.strip(), swid.strip()) if s2 and swid else None
+
+
+def fetch_with_cookies(creds=None) -> dict | None:
+    """The league's rosters straight from ESPN (as you, with your cookies). None if no credentials are configured."""
+    creds = creds or credentials()
+    if not creds:
         return None
-    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leagues/{league_id()}"
-           "?view=mRoster&view=mTeam")
-    req = urllib.request.Request(url, headers={"Cookie": f"espn_s2={s2}; SWID={swid}", "Accept": "application/json", "User-Agent": "Mozilla/5.0"})
+    s2, swid = creds
+    req = urllib.request.Request(league_url(), headers={"Cookie": f"espn_s2={s2}; SWID={swid}", "Accept": "application/json", "User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=60, context=_ssl()) as r:
-            return json.loads(r.read().decode())
-    except Exception as e:                                       # never print the request (it carries the cookies)
-        raise SystemExit(f"ESPN hat die Anfrage abgelehnt ({type(e).__name__}). Cookies abgelaufen? Alternative: espn_league.json aus dem Browser speichern.")
+            j = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:                                 # never print the request (it carries the cookies), only the status
+        if e.code in (401, 403):
+            raise LeagueFetchError(f"ESPN lehnt die Zugangsdaten ab (HTTP {e.code}), vermutlich abgelaufen: `./draft_app/league.sh login` erneut ausführen")
+        raise LeagueFetchError(f"ESPN antwortet mit HTTP {e.code}")
+    except Exception as e:
+        raise LeagueFetchError(f"keine Verbindung zu ESPN ({type(e).__name__})")
+    if not (isinstance(j, dict) and isinstance(j.get("teams"), list) and j["teams"]):
+        raise LeagueFetchError("ESPN hat keine Teamliste geliefert (Liga-ID in local_config.json prüfen)")
+    return j
+
+
+def save_league_file(j: dict) -> None:
+    """Keep a local copy of the live answer (atomic), so the next offline run still has the latest state."""
+    tmp = LEAGUE_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(j, ensure_ascii=False))
+    tmp.replace(LEAGUE_JSON)
+
+
+def cmd_login(args=None):
+    """One-time setup of the automatic fetch: asks for the two ESPN cookie values (hidden input), checks them against ESPN
+    and stores them in draft_app/espn_auth.json (mode 600, git-ignored). They are never printed."""
+    import getpass
+    print("ESPN-Zugang für den automatischen Kader-Abruf. Die Werte bleiben auf diesem Rechner (draft_app/espn_auth.json, nur du darfst sie lesen, von git ignoriert).\n"
+          "So findest du sie: in Chrome auf fantasy.espn.com eingeloggt sein, Rechtsklick > Untersuchen > Tab \"Application\" > Cookies > https://fantasy.espn.com,\n"
+          "dort die Zeilen `espn_s2` und `SWID` suchen und jeweils den Wert kopieren (Doppelklick auf die Spalte \"Value\").\n")
+    s2 = getpass.getpass("espn_s2 (Eingabe bleibt unsichtbar): ").strip().strip('"\'')
+    swid = getpass.getpass("SWID (mit den geschweiften Klammern): ").strip().strip('"\'')
+    if swid and not swid.startswith(("{", "%7B", "%7b")):
+        swid = "{" + swid.strip("{}") + "}"
+    if not s2 or not swid:
+        raise SystemExit("Beide Werte werden gebraucht, nichts gespeichert.")
+    try:
+        j = fetch_with_cookies((s2, swid))
+    except LeagueFetchError as e:
+        raise SystemExit(f"Nicht gespeichert: {e}")
+    fd = os.open(AUTH_JSON, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"espn_s2": s2, "swid": swid}, f)
+    os.chmod(AUTH_JSON, 0o600)
+    save_league_file(j)
+    print(f"OK: ESPN akzeptiert die Zugangsdaten ({len(j['teams'])} Teams). Ab jetzt holen `refresh`, `rank`, `suggest`, `offer`, `want` und die Wochen-Aufstellung die Kader selbst.\n"
+          "Läuft der Zugang irgendwann ab, sagt das Werkzeug es und `./draft_app/league.sh login` erneuert ihn.")
 
 
 def _read_league(path: Path) -> dict | None:
@@ -154,30 +213,38 @@ def league_id_or_none() -> str:
         return "\0"
 
 
-def refresh(args=None) -> dict:
+def refresh(args=None, brief: bool = False) -> dict:
+    """Rosters of all teams. Order: live from ESPN (if credentials are set up, see `login`), else the saved league file.
+    brief=True (used before rank/suggest/offer/want/weekly): one status line, plus changes and warnings only."""
     explicit = getattr(args, "file", None)
-    j, path = find_league_file(explicit)
-    if j is None and explicit:
-        if not Path(explicit).exists():
-            raise SystemExit(f"Datei {explicit} existiert nicht (Beispiel: python league_tools.py refresh --file espn_league.json).")
+    brief = brief or bool(getattr(args, "brief", False))
+    j, path, saved_at, src = None, None, None, None
+    if not explicit and not os.environ.get("LEAGUE_OFFLINE"):
         try:
-            json.loads(Path(explicit).read_text())
-        except json.JSONDecodeError:
-            raise SystemExit(f"{Path(explicit).name} ist kein JSON (als 'Webseite, nur HTML' speichern oder den Text der Seite kopieren und als .json ablegen).")
-        raise SystemExit(f"{Path(explicit).name} enthält keine ESPN-Teamliste (falsche Seite gespeichert? Die URL braucht view=mRoster und view=mTeam).")
-    saved_at = None
-    if j is not None:
-        saved_at = path.stat().st_mtime
-        src = f"Datei {path.name} (gespeichert {time.strftime('%d.%m. %H:%M', time.localtime(saved_at))}, vor {fmt_age(time.time() - saved_at)})"
-        if path != LEAGUE_JSON and not explicit:
-            print(f"Hinweis: die Liga-Daten lagen in {path} - am besten umbenennen in draft_app/espn_league.json.")
-    else:
-        j = fetch_with_cookies()
-        src = "ESPN mit deinen Cookies" if j else None
+            j = fetch_with_cookies()
+        except LeagueFetchError as e:
+            print(f"(Live-Abruf bei ESPN nicht möglich: {e}. Ich nehme die gespeicherte Datei.)")
+        if j is not None:
+            save_league_file(j)
+            saved_at, src = time.time(), "live von ESPN abgerufen"
     if j is None:
-        raise SystemExit("Keine Roster-Quelle gefunden. Geprüft: draft_app/espn_league.json, draft_app/espn_auth.json, ~/Downloads/*espn*.json\n"
-                         "(keine davon enthält eine ESPN-Teamliste). Speichere die ESPN-Liga-Daten aus deinem Browser als draft_app/espn_league.json\n"
-                         "(Anleitung ganz oben in league_tools.py: URL im eingeloggten Chrome öffnen, Cmd+S) und starte noch einmal.")
+        j, path = find_league_file(explicit)
+        if j is None and explicit:
+            if not Path(explicit).exists():
+                raise SystemExit(f"Datei {explicit} existiert nicht (Beispiel: python league_tools.py refresh --file espn_league.json).")
+            try:
+                json.loads(Path(explicit).read_text())
+            except json.JSONDecodeError:
+                raise SystemExit(f"{Path(explicit).name} ist kein JSON (als 'Webseite, nur HTML' speichern oder den Text der Seite kopieren und als .json ablegen).")
+            raise SystemExit(f"{Path(explicit).name} enthält keine ESPN-Teamliste (falsche Seite gespeichert? Die URL braucht view=mRoster und view=mTeam).")
+        if j is not None:
+            saved_at = path.stat().st_mtime
+            src = f"gespeicherte Datei {path.name} (gespeichert {time.strftime('%d.%m. %H:%M', time.localtime(saved_at))}, vor {fmt_age(time.time() - saved_at)})"
+            if path != LEAGUE_JSON and not explicit:
+                print(f"Hinweis: die Liga-Daten lagen in {path} - am besten umbenennen in draft_app/espn_league.json.")
+    if j is None:
+        raise SystemExit("Keine Roster-Quelle gefunden. Einmalig einrichten: `./draft_app/league.sh login` (dann holt das Werkzeug die Kader selbst),\n"
+                         "oder die ESPN-Liga-Daten aus dem Browser als draft_app/espn_league.json speichern (Anleitung ganz oben in league_tools.py).")
     new = parse_espn_league(j)
     if len(new) < 2:
         raise SystemExit("Die Datei enthält keine Teams (falsche Seite gespeichert?).")
@@ -189,15 +256,16 @@ def refresh(args=None) -> dict:
         if ALIASES.get(k_new) in old and k_new not in old:
             new[ALIASES[k_new]] = new.pop(k_new)
     ROSTERS_JSON.write_text(json.dumps(new, indent=1, ensure_ascii=False))
-    print(f"Quelle: {src} · {len(new)} Teams, {sum(len(v) for v in new.values())} Spieler -> league_rosters.json")
+    live = src.startswith("live")
+    print(f"Kader: {src} · {len(new)} Teams, {sum(len(v) for v in new.values())} Spieler" + ("" if brief else " -> league_rosters.json"))
     counted = {(t.get("name") or t.get("nickname") or f"Team {t.get('id')}").strip(): int((t.get("transactionCounter") or {}).get("trades") or 0)
                for t in j.get("teams", [])}
-    if any(counted.values()):                                   # ESPN counts every trade a team has made: a sanity check for "is my file recent?"
-        print(f"ESPN-Zähler in dieser Datei: {sum(counted.values()) // 2} Trade(s) ({', '.join(f'{t} {n}' for t, n in counted.items() if n)})")
-    if saved_at is not None and time.time() - saved_at > 3 * 3600:
-        print(f"ACHTUNG: Die Datei ist {fmt_age(time.time() - saved_at)} alt. `refresh` fragt ESPN nicht selbst ab, es liest nur diese gespeicherte Datei.\n"
-              f"  Seit einem neuen Trade/Add/Drop: im eingeloggten Chrome diese Adresse öffnen und mit Cmd+S als draft_app/espn_league.json speichern (alte Datei ersetzen):\n"
-              f"  {league_url()}")
+    if any(counted.values()) and not brief:                     # ESPN counts every trade a team has made: a check that a trade is in the data
+        print(f"ESPN-Zähler: {sum(counted.values()) // 2} Trade(s) in der Liga ({', '.join(f'{t} {n}' for t, n in counted.items() if n)})")
+    stale = (not live) and saved_at is not None and time.time() - saved_at > 3 * 3600
+    if stale:
+        print(f"ACHTUNG: Die gespeicherte Datei ist {fmt_age(time.time() - saved_at)} alt; ein Trade danach wäre nicht enthalten. Einmal `./draft_app/league.sh login` einrichten, dann holt das Werkzeug die Kader selbst.\n"
+              f"  (Von Hand: diese Adresse im eingeloggten Chrome öffnen und mit Cmd+S als draft_app/espn_league.json speichern: {league_url()})")
     if old:
         where_old = {names.name_key(p): t for t, ps in old.items() for p in ps}
         where_new = {names.name_key(p): (t, p) for t, ps in new.items() for p in ps}
@@ -205,17 +273,19 @@ def refresh(args=None) -> dict:
         adds = [(p, t) for k, (t, p) in where_new.items() if k not in where_old]
         drops = [(p, where_old[k]) for k in where_old if k not in where_new for p in [next((x for ps in old.values() for x in ps if names.name_key(x) == k), k)]]
         if not (moves or adds or drops):
-            print("\nKeine Veränderung gegenüber dem letzten Stand."
-                  + (" Wenn du einen neuen Trade erwartest: die Datei ist vermutlich älter als der Trade (siehe oben)." if saved_at is not None else ""))
-        print(f"\nTrades / Wechsel seit dem letzten Stand: {len(moves)}")
-        for p, a, b in sorted(moves, key=lambda m: (m[1], m[2])):
-            print(f"  {p}: {a} -> {b}")
-        if adds or drops:
-            print(f"Neu verpflichtet: {len(adds)}  ·  entlassen: {len(drops)}")
-            for p, t in adds[:12]:
-                print(f"  + {p} ({t})")
-            for p, t in drops[:12]:
-                print(f"  - {p} ({t})")
+            if not brief or stale:
+                print("Keine Veränderung gegenüber dem letzten Stand." + (" Wenn du einen neuen Trade erwartest: die Datei ist vermutlich älter als der Trade." if stale else ""))
+        else:
+            print(f"\nTrades / Wechsel seit dem letzten Stand: {len(moves)}")
+            for p, a, b in sorted(moves, key=lambda m: (m[1], m[2])):
+                print(f"  {p}: {a} -> {b}")
+            if adds or drops:
+                print(f"Neu verpflichtet: {len(adds)}  ·  entlassen: {len(drops)}")
+                for p, t in adds[:12]:
+                    print(f"  + {p} ({t})")
+                for p, t in drops[:12]:
+                    print(f"  - {p} ({t})")
+            print()
     return new
 
 
@@ -656,7 +726,9 @@ def cmd_want(L: League, args):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("refresh"); r.add_argument("--file")
+    r = sub.add_parser("refresh"); r.add_argument("--file", help="nur diese gespeicherte Datei lesen (kein Live-Abruf)")
+    r.add_argument("--brief", action="store_true", help="knappe Ausgabe: eine Zeile, dazu Veränderungen und Warnungen")
+    sub.add_parser("login", help="einmalig: ESPN-Zugang für den automatischen Kader-Abruf einrichten")
     sub.add_parser("rank"); sub.add_parser("suggest"); sub.add_parser("all")
     o = sub.add_parser("offer"); o.add_argument("--team", required=True); o.add_argument("--asks", required=True, help='deine Spieler, nach denen gefragt wird, mit ; getrennt')
     w = sub.add_parser("want"); w.add_argument("player", help='Wunschspieler, mehrere vom selben Team mit ; getrennt')
@@ -666,13 +738,15 @@ def main() -> int:
     w.add_argument("--skip", help="Spieler des Partners, die nicht mitverlangt werden, mit ; getrennt")
     w.add_argument("--top", type=int, default=2, help="Optionen je Kategorie (Standard 2)")
     args = ap.parse_args()
+    if args.cmd == "login":
+        cmd_login(args); return 0
     if args.cmd == "refresh":
         refresh(args); return 0
-    if args.cmd == "all":
+    if args.cmd in ("all", "rank", "suggest", "offer", "want"):          # every analysis starts from the current rosters
         try:
-            refresh(args)
+            refresh(args, brief=args.cmd != "all")
         except SystemExit as e:
-            print(f"(Roster nicht aktualisiert: {e}) rechne mit dem letzten Stand in league_rosters.json")
+            print(f"(Kader nicht aktualisiert: {e}) rechne mit dem letzten Stand in league_rosters.json")
     L = League()
     if args.cmd in ("rank", "all"):
         cmd_rank(L)
