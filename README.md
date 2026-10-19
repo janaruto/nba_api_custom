@@ -57,7 +57,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 80 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 82 Tests, ohne Netzwerk
 ./draft_app/league.sh login                             # ESPN-Zugang für den automatischen Kader-Abruf (Abschnitt 10.4)
 ```
 
@@ -93,6 +93,7 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 | `./draft_app/weekly.sh N --swap "Kyle Filipowski=Jalen Suggs"` | **Was-wäre-wenn:** Suggs spielt statt Filipowski; die Siegchance wird neu gerechnet und die beste Aufstellung für diesen Fall genannt. Mehrere Tausche: `"A=B;C=D"` oder `--swap` wiederholen |
 | `./draft_app/weekly.sh N --swap "Kyle Filipowski=Evan Mobley"` | ist der Zweite nicht in deinem Kader, gilt es als Trade/Add (der Erste geht, der Zweite kommt) |
 | `./draft_app/weekly.sh N [--team "Name"] [--refresh]` | anderes Team als Perspektive; `--refresh` lädt den NBA-Spielplan neu |
+| `./draft_app/weekly.sh N --ignore-out` / `--expected-games` | Standard ist: **jeder Spieler absolviert alle Spiele seines Teams** (ESPN-OUT ausgenommen). `--ignore-out` zählt auch OUT-Spieler mit, `--expected-games` rechnet stattdessen Teamspiele × Saison-Verfügbarkeit |
 | `./draft_app/weekly.sh --init-rosters` | `league_rosters.json` aus dem Draft-Log erzeugen (nur einmal nötig, falls kein ESPN-Zugang) |
 
 **Liga-Werkzeuge** (`league.sh`; holen vor jeder Auswertung die Kader live von ESPN, sobald `login` eingerichtet ist)
@@ -113,7 +114,7 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 
 | Befehl | Wirkung |
 |---|---|
-| `.venv/bin/python -m pytest` | alle 80 Tests (kein Netzwerk) |
+| `.venv/bin/python -m pytest` | alle 82 Tests (kein Netzwerk) |
 
 Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ich), vor dem Matchup `./draft_app/weekly.sh` (beste Aufstellung), bei einem Tauschgedanken `--swap`, bei einem Angebot `offer`/`want`.
 
@@ -134,7 +135,7 @@ Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ic
 | `draft_app/league_tools.py`, `league.sh` | Kader aller Teams aktualisieren, Rangliste mit Siegchancen, Trade-Vorschläge, Angebote, Wunschspieler |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 80 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
+| `draft_app/tests/` | 82 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -248,7 +249,7 @@ Ist die Zahl der Teamspiele selbst unsicher (Saisondurchschnitt, 3.45 Spiele je 
 ```
 E[Woche]   = E[G] · μ                         E[G] = g·a
 Var[Woche] = E[G] · σ² + Var[G] · μ²          Var[G] = g·a·(1−a) + 4·p·(1−p)·a²,   p = g/4   (Saisondurchschnitt)
-                                              Var[G] = g·a·(1−a)                                (bekannte Woche, Teamspiele fest)
+                                              Var[G] = g·a·(1−a)                                (bekannte Woche, Teamspiele fest; mit a = 1 also 0)
 ```
 
 (Zusammengesetzte Verteilung: `μ`, `σ` pro Spiel.) Teamsumme: Erwartungswerte und Varianzen addieren sich über die Starter.
@@ -328,13 +329,15 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
 **Wochen-Aufstellung** (`weekly_lineup.py`). Für eine Woche und einen Gegner:
 
 1. Spielplan über `ScheduleLeagueV2` (nur Regular Season); je NBA-Team die Zahl der Spiele von Montag bis Sonntag. Wegen der gesperrten Wochenaufstellung zählt ein Vier-Spiele-Spieler etwa doppelt so viel wie ein Zwei-Spiele-Spieler.
-2. Erwartete Spiele je Spieler = Teamspiele × Verfügbarkeit (ESPN OUT zählt als 0.05); die Teamspiele sind bekannt, also `Var[G] = g·a·(1−a)` (6.4).
+2. **Annahme: Jeder Spieler absolviert alle Spiele seines Teams in dieser Woche** (für beide Teams). Die Saison-Verfügbarkeit des Modells (rund 0.67, „er verpasst übers Jahr einige Spiele“) sagt nichts über eine einzelne Woche, deren Aufstellung man selbst setzt, und wird deshalb nicht angewendet:
+   erwartete Spiele = Teamspiele, `Var[G] = 0` (die Spiele sind bekannt und sicher; es bleibt nur die Streuung pro Spiel). Einzige Ausnahme: ein Spieler, den ESPN auf OUT führt, spielt nicht (Gewicht 0.05); `--ignore-out` rechnet auch ihn mit, `--expected-games` stellt auf Teamspiele × Verfügbarkeit zurück.
+   **Folge:** Die Siegchancen werden deutlicher. Ohne Ausfall-Unsicherheit entscheidet, wer mehr Spiele und die stärkeren Mittel hat: Woche 1 (Stand 19. Okt.) ergibt 31 % statt 55 % mit erwarteten Spielen, unter anderem weil drei meiner Starter (Murray, Booker, Avdija) nur zwei Spiele haben und der Gegner bei REB, PTS und DD klar vorne liegt (diese Unterlegenheit war vorher durch die Ausfall-Streuung verwischt).
 3. Kategorie-Momente beider Teams, `P(Kategorie)` gegen den konkreten Gegner (6.5), `P(Matchup)` wie in 6.6.
 4. **Erschöpfende Suche** über alle `C(13, 10) = 286` Zehner-Aufstellungen, gefiltert auf legal (Positionsplätze, höchstens 4 Center); die mit der höchsten Siegchance gewinnt. Der Gegner spielt vermutlich sein bestes legales Zehner gegen ein neutrales Feld (geraten).
 5. Ausgabe: Start/Bank mit Platz, Spielen, Wochensummen, Gewinnchance je Kategorie und die nächstbesten Änderungen (ein Starter gegen einen Bankspieler).
 6. **Was-wäre-wenn (`--swap "A=B"`).** Spielt B statt A (beide in deinem Kader), läuft dieselbe erschöpfende Suche mit der Vorgabe „B startet, A sitzt“; die Ausgabe nennt die neu gerechnete Siegchance, den Unterschied zur freien Bestleistung in Prozentpunkten, die beste Aufstellung unter dieser Vorgabe
    (und die bessere ohne Vorgabe, falls es eine gibt) und die Kategorien, die sich am stärksten bewegen. Steht B nicht in deinem Kader, wird ein Trade/Add angenommen: A verlässt den Kader, B kommt dazu (seine Zeile kommt bei Bedarf aus ESPNs Projektion), und die beste Aufstellung des neuen Kaders wird gesucht.
-   Ohne `--week` wählt das Skript das laufende Matchup, zwischen zwei Wochen das nächste.
+   Ohne `--week` wählt das Skript das laufende Matchup, zwischen zwei Wochen das nächste. Die Tausch-Rechnung nutzt dieselbe Annahme (alle Spiele des Teams).
 
 **Liga-Werkzeuge** (`league_tools.py`).
 
@@ -497,6 +500,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E25 | 18. Okt. | `want`: Trade-Grösse frei wählbar und mehrere Optionen statt „dem einen besten“ | Was „am besten“ ist, hängt vom Ziel ab (beide profitieren, mein Gewinn, Akzeptanz beim Manager); redundante Zugaben ohne Wirkung werden verworfen; grosse Suchen erst grob vorgefiltert | Näherung nur für die Vorauswahl, die Ausgabe ist immer genau gerechnet |
 | E26 | 19. Okt. | Kader live von ESPN holen (`league.sh login` einmalig, Cookies in `espn_auth.json`, Rechte 600), vor jeder Auswertung und vor der Wochen-Aufstellung | Das Speichern der Seite von Hand wurde nach einem Trade vergessen, und das Werkzeug zeigte dann „keine Veränderung“; die Eingabe der Werte macht der Nutzer selbst, sie werden nie gedruckt | Cookies laufen ab (dann Rückfall auf die gespeicherte Datei und Hinweis); Auslesen der Chrome-Cookies per Programm wurde bewusst nicht gebaut |
 | E27 | 19. Okt. | `weekly.sh`: Woche automatisch wählen; `--swap` rechnet die Siegchance für „B statt A“ neu und nennt immer die beste Aufstellung dazu (Vorgabe „startet“/„sitzt“ in der erschöpfenden Suche) | Vor jedem Matchup stellt sich die Frage „was, wenn ich X statt Y bringe?“; mit Vorgabe statt Einzeltausch sieht man auch, was sich im Rest der Aufstellung ändert | Ist B nicht im Kader, gilt es als Trade/Add (A geht, B kommt) |
+| E28 | 19. Okt. | Wochen-Aufstellung und Tausch-Rechnung: jeder Spieler absolviert alle Spiele seines Teams (ESPN-OUT ausgenommen), für beide Teams; `--expected-games` und `--ignore-out` als Schalter | Die Saison-Verfügbarkeit (0.67) beschreibt das Jahr, nicht die einzelne Woche; man setzt die Aufstellung selbst und plant mit den Spielen, die anstehen | Macht die Prozente deutlicher (Woche 1: 31 % statt 55 %); Reihenfolge der Aufstellungen unkritisch |
 
 ---
 
@@ -513,6 +517,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 9. **Nominierungs-Strategie fehlt.** Die App sagt, wie viel ein Spieler wert ist, nicht, wen man wann aufrufen soll (F5).
 10. **Liga-Werkzeuge rechnen mit durchschnittlichen Wochen.** Ein Trade kann in einer Woche mit wenigen Spielen anders aussehen; „fair“ ist eine Faustregel; die Saisonsimulation paart zufällig statt nach echtem Spielplan.
 11. **Die Mischung 50/50 mit ESPN ist nicht validiert.** Prüfbar erst mit der Saison.
+12. **Wochen-Aufstellung ohne Ausfall-Unsicherheit.** Mit „alle Spiele“ (6.12) sind die Siegchancen deutlicher als die Wirklichkeit, in der Spieler ausfallen; die Kalibrierung 0.66 wurde mit Ausfall-Varianz gefittet. Für die Reihenfolge der Aufstellungen ist das unkritisch, die absoluten Prozente sind eher zu extrem.
 
 ---
 
@@ -570,7 +575,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 80 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 82 Tests):
 
 | Datei | Prüft |
 |---|---|

@@ -123,3 +123,38 @@ def test_swap_report_names_unknown_and_foreign_out_players(capsys):
         wl.swap_report(m, d, np.full(len(d), 3.0), roster, 0.5, np.full(10, 0.5), opp, [("P0", "Nobody Atall")], np.zeros(len(d), bool))
     with pytest.raises(SystemExit):                                                  # P20 is not on the roster, so it cannot be swapped out
         wl.swap_report(m, d, np.full(len(d), 3.0), roster, 0.5, np.full(10, 0.5), opp, [("P20", "P0")], np.zeros(len(d), bool))
+
+
+# ── a single matchup week assumes every player plays all of his team's games ─────────────────────────
+WEEK_META = {"league_rates": {"FG_PCT": 0.47, "FT_PCT": 0.78, "PTS_MIN": 0.49}}
+
+
+def _week_pool(n=30):
+    d = synthetic_pool(n=n)
+    d["CURRENT_TEAM_ABBR"] = ["BOS", "NYK"] * (n // 2)
+    d["INJURY_STATUS"] = ""
+    d.loc[3, "INJURY_STATUS"] = "OUT"                                                # player 3 plays for NYK
+    d.loc[5, "INJURY_STATUS"] = "DAY_TO_DAY"
+    return d
+
+
+def test_every_player_plays_all_team_games_by_default():
+    d = _week_pool()
+    m, g, unknown, out = wl.week_model(d, WEEK_META, {"BOS": 3, "NYK": 4})
+    pts = engine.CATS.index("PTS")
+    assert g[0] == 3 and g[1] == 4
+    assert m.E[0, pts] == pytest.approx(3 * d.M_PTS[0])                              # BOS player: 3 games x per-game mean, no availability discount
+    assert m.E[1, pts] == pytest.approx(4 * d.M_PTS[1])
+    assert m.V[0, pts] == pytest.approx(3 * d.S_PTS[0] ** 2)                         # games are known and certain: no games-played variance
+    assert m.E[5, pts] == pytest.approx(4 * d.M_PTS[5])                              # day-to-day counts as playing
+    assert out[3] and out.sum() == 1
+    assert m.E[3, pts] < 0.1 * m.E[1, pts]                                           # ESPN OUT: practically nothing
+
+
+def test_out_players_can_be_counted_in_and_expected_games_can_be_switched_on():
+    d = _week_pool()
+    pts = engine.CATS.index("PTS")
+    m, _, _, out = wl.week_model(d, WEEK_META, {"BOS": 3, "NYK": 4}, ignore_out=True)
+    assert m.E[3, pts] == pytest.approx(4 * d.M_PTS[3]) and not out.any()
+    m2, _, _, _ = wl.week_model(d, WEEK_META, {"BOS": 3, "NYK": 4}, full_games=False)
+    assert m2.E[0, pts] == pytest.approx(3 * float(d.AVAIL[0]) * d.M_PTS[0])         # the old weighting by the model's availability

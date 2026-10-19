@@ -16,6 +16,8 @@ max 4 centres on the roster) that maximise YOUR chance to win the matchup (6 of 
     python draft_app/weekly_lineup.py --opponent "Brick City" --start 2026-10-20 --end 2026-10-25 --refresh
 
 league_rosters.json ({team: [player names]}) is YOUR source of truth after the draft: edit it after trades, adds and drops.
+Assumption: every player plays ALL of his NBA team's games in the matchup week (for both teams); only a player ESPN lists as OUT is
+left out (--ignore-out includes him, --expected-games switches to teams' games x the model's season availability).
 The NBA schedule comes from nba_api (cached in cache/schedule_2026-27.json); ESPN injury status from refresh_injuries.py.
 What it does NOT know: which of your players ESPN's own lineup rules block on a given day, and the opponent's actual choices:
 the opponent is assumed to play his best legal ten.
@@ -131,17 +133,25 @@ def resolve_roster(pool: pd.DataFrame, player_names: list):
 
 
 # ── the weekly model ─────────────────────────────────────────────────────────────────────────────────
-def week_model(pool: pd.DataFrame, meta: dict, team_games: dict):
-    """PoolModel for ONE week: every player's expected games = his team's games that week x his availability."""
+def week_model(pool: pd.DataFrame, meta: dict, team_games: dict, full_games: bool = True, ignore_out: bool = False):
+    """PoolModel for ONE week: every player's games = his team's games that week.
+
+    By default (`full_games`) every player is assumed to play ALL of his team's games that week: the season-long
+    availability (about 0.67, "he will miss some games over the year") says nothing about a single week whose lineup
+    you set yourself, so it is not applied. The one exception is a player ESPN lists as OUT: he cannot play, so he counts
+    (almost) nothing, unless `ignore_out` is set. `full_games=False` brings back the expected-games weighting."""
     g = pool["CURRENT_TEAM_ABBR"].map(team_games).astype(float)
     unknown = g.isna()
     g = g.fillna(NEUTRAL_GAMES).to_numpy()
     p = pool.copy()
-    out = p["INJURY_STATUS"].fillna("") == "OUT"
-    p.loc[out, "AVAIL"] = 0.05                                                  # ESPN says OUT: assume he does not play this week
+    out = (p["INJURY_STATUS"].fillna("") == "OUT").to_numpy()
+    if full_games:
+        p["AVAIL"] = 1.0
+    if not ignore_out:
+        p.loc[out, "AVAIL"] = 0.05                                              # ESPN says OUT: assume he does not play this week
     rules = engine.Rules.from_meta(meta)
     model = engine.build_pool_model(p, rules, meta["league_rates"], games=g)
-    return model, g, unknown.to_numpy(), out.to_numpy()
+    return model, g, unknown.to_numpy(), (out & (not ignore_out))
 
 
 def best_lineup(model, roster, vs_mom, calibrate=True, must=(), forbid=()):
@@ -336,7 +346,7 @@ def run(args) -> int:
     if not tg:
         print(f"Keine NBA-Spiele zwischen {start} und {end} im Spielplan."); return 2
 
-    model, games, unknown, out_mask = week_model(pool, meta, tg)
+    model, games, unknown, out_mask = week_model(pool, meta, tg, full_games=not args.expected_games, ignore_out=args.ignore_out)
     resolved = {t: resolve_roster(pool, ns) for t, ns in rosters_names.items()}
     rosters = {t: r for t, (r, _) in resolved.items()}
     for t in (you, opponent):
@@ -353,6 +363,9 @@ def run(args) -> int:
 
     print(f"\n{'=' * 100}\n{label + ': ' if label else ''}{you}  vs  {opponent}      {start} bis {end}\n{'=' * 100}")
     print(f"Siegchance in dieser Woche: {100 * p_win:.0f} %   ·   erwartete Kategorien: {pcat.sum():.1f} von 10")
+    print("Annahme: " + ("jeder Spieler absolviert alle Spiele seines Teams in dieser Woche" if not args.expected_games
+                         else "erwartete Spiele = Teamspiele x Verfügbarkeit des Modells")
+          + ("; ESPN-OUT-Spieler zählen mit (--ignore-out)" if args.ignore_out else "; ESPN-OUT-Spieler spielen nicht") + ", für beide Teams.")
     dist = {}
     for n_ in tg.values():
         dist[n_] = dist.get(n_, 0) + 1
@@ -417,6 +430,9 @@ def main() -> int:
     ap.add_argument("--swap", action="append", metavar='"A=B"',
                     help='Was-wäre-wenn: B spielt statt A, z. B. "Kyle Filipowski=Jalen Suggs" (mehrere mit ; trennen oder --swap wiederholen). '
                          'Ist B nicht in deinem Kader, gilt es als Trade/Add (A geht, B kommt). Die Siegchance wird neu gerechnet und die beste Aufstellung genannt.')
+    ap.add_argument("--expected-games", action="store_true",
+                    help="statt „alle Spiele des Teams“ mit den erwarteten Spielen rechnen (Teamspiele x Saison-Verfügbarkeit des Modells)")
+    ap.add_argument("--ignore-out", action="store_true", help="auch Spieler, die bei ESPN auf OUT stehen, spielen alle Spiele")
     ap.add_argument("--team", help="dein Team (Standard: aus league_meta.json)")
     ap.add_argument("--rosters", help="Pfad zu einer anderen Roster-Datei")
     ap.add_argument("--refresh", action="store_true", help="NBA-Spielplan neu laden")
