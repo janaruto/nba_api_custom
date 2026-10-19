@@ -138,3 +138,48 @@ def test_candidates_cover_the_requested_sizes_and_respect_keep_and_skip():
     assert sizes == {(1, 1), (1, 2), (2, 1), (2, 2)}
     assert all(9 in t and 4 not in g and 8 not in t for g, t in c)
     assert len(c) == (3 + 3) * (1 + 3)                                                                # give 1 or 2 of my 3 offerable · get nothing extra or 1 of {7, 6, 5}
+
+
+# ── which file counts, and does the tool tell you when it is stale? ──────────────────────────────────
+def _age(path, hours):
+    import os
+    t = __import__("time").time() - hours * 3600
+    os.utime(path, (t, t))
+
+
+def test_the_newest_file_wins_even_if_the_app_folder_has_an_older_one(no_files, monkeypatch):
+    monkeypatch.setattr(lt, "LOCAL_JSON", no_files / "local_config.json")
+    dl = no_files / "home" / "Downloads"; dl.mkdir(parents=True)
+    old = no_files / "espn_league.json"; old.write_text(json.dumps(espn({"A": ["P1"], "B": ["P2"]}))); _age(old, 30)
+    new = dl / "espn-league (1).json"; new.write_text(json.dumps(espn({"A": ["P1", "P3"], "B": ["P2"]}))); _age(new, 1)
+    j, path = lt.find_league_file()
+    assert path == new and len(lt.parse_espn_league(j)["A"]) == 2
+    _age(new, 40)                                                                   # now the app folder's file is the newer one
+    assert lt.find_league_file()[1] == old
+
+
+def test_a_page_saved_as_html_and_a_file_without_extension_are_read(no_files, monkeypatch):
+    monkeypatch.setattr(lt, "LOCAL_JSON", no_files / "local_config.json")
+    (no_files / "local_config.json").write_text(json.dumps({"league_id": 4242}))
+    dl = no_files / "home" / "Downloads"; dl.mkdir(parents=True)
+    payload = json.dumps(espn({"A": ["P1"], "B": ["P2"]})).replace('"', "&quot;")
+    (dl / "4242").write_text(f"<html><body><pre style=\"word-wrap: break-word;\">{payload}</pre></body></html>")      # Chrome: 'Webseite, nur HTML'
+    j, path = lt.find_league_file()
+    assert path.name == "4242" and len(j["teams"]) == 2
+
+
+def test_refresh_warns_when_the_file_is_old_and_shows_espns_trade_counter(no_files, monkeypatch, capsys):
+    monkeypatch.setattr(lt, "LOCAL_JSON", no_files / "local_config.json")
+    (no_files / "local_config.json").write_text(json.dumps({"league_id": 4242}))
+    data = espn({"A": ["P1"], "B": ["P2"]})
+    data["teams"][0]["transactionCounter"] = {"trades": 1}
+    data["teams"][1]["transactionCounter"] = {"trades": 1}
+    f = no_files / "espn.json"; f.write_text(json.dumps(data)); _age(f, 27)
+    lt.refresh(types.SimpleNamespace(file=str(f)))
+    out = capsys.readouterr().out
+    assert "1 Trade(s)" in out and "ACHTUNG" in out and "27 Std." in out and "leagues/4242?view=mRoster" in out
+    lt.refresh(types.SimpleNamespace(file=str(f)))                                  # second run: same file, nothing changed -> says so
+    assert "Keine Veränderung" in capsys.readouterr().out
+    _age(f, 0.1)
+    lt.refresh(types.SimpleNamespace(file=str(f)))
+    assert "ACHTUNG" not in capsys.readouterr().out                                 # a fresh file gets no warning

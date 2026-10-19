@@ -20,6 +20,7 @@ All numbers are model estimates with the same assumptions as the rest of this pr
 """
 
 import argparse
+import html
 import itertools
 import json
 import os
@@ -93,10 +94,16 @@ def fetch_with_cookies() -> dict | None:
         raise SystemExit(f"ESPN hat die Anfrage abgelehnt ({type(e).__name__}). Cookies abgelaufen? Alternative: espn_league.json aus dem Browser speichern.")
 
 
-def _is_league_json(path: Path) -> dict | None:
-    """The parsed file if it is ESPN's league JSON (has a 'teams' list), else None. Never prints anything from the file."""
+def _read_league(path: Path) -> dict | None:
+    """The parsed file if it is ESPN's league JSON (has a 'teams' list), else None. Also accepts a page saved as HTML
+    ('Webseite, nur HTML'), where the browser wraps the JSON in <pre>. Never prints anything from the file."""
     try:
-        j = json.loads(path.read_text())
+        text = path.read_text(errors="ignore")
+        try:
+            j = json.loads(text)
+        except json.JSONDecodeError:
+            m = re.search(r"<pre[^>]*>(.*?)</pre>", text, re.S | re.I)
+            j = json.loads(html.unescape(m.group(1))) if m else None
     except Exception:
         return None
     return j if isinstance(j, dict) and isinstance(j.get("teams"), list) and j["teams"] else None
@@ -104,17 +111,40 @@ def _is_league_json(path: Path) -> dict | None:
 
 def find_league_file(explicit=None):
     """(parsed json, path) of the saved league data. Tolerates the usual mistakes: wrong file name (e.g. saved as
-    espn_auth.json) or still sitting in ~/Downloads."""
-    cands = [Path(explicit)] if explicit else [LEAGUE_JSON, AUTH_JSON]
-    if not explicit:
-        dl = Path.home() / "Downloads"
-        if dl.exists():
-            cands += sorted([p for p in dl.glob("*.json") if "espn" in p.name.lower() or league_id_or_none() in p.name],
-                            key=lambda p: -p.stat().st_mtime)[:5]
+    espn_auth.json), no extension, or still sitting in ~/Downloads or ~/Desktop. If several files qualify, the NEWEST wins
+    (so a fresh download is never shadowed by an older espn_league.json)."""
+    if explicit:
+        c = Path(explicit)
+        j = _read_league(c) if c.exists() else None
+        return (j, c) if j is not None else (None, None)
+    cands = [LEAGUE_JSON, AUTH_JSON]
+    lid = league_id_or_none()
+    for d in (Path.home() / "Downloads", Path.home() / "Desktop"):
+        try:
+            cands += [p for p in d.iterdir() if p.is_file() and p.suffix.lower() in ("", ".json", ".txt", ".html")
+                      and ("espn" in p.name.lower() or lid in p.name) and p.stat().st_size < 30_000_000
+                      and time.time() - p.stat().st_mtime < 30 * 86400]
+        except OSError:
+            pass
+    found = []
     for c in cands:
-        if c.exists() and (j := _is_league_json(c)) is not None:
-            return j, c
-    return None, None
+        if c.exists() and (j := _read_league(c)) is not None:
+            found.append((c.stat().st_mtime, c, j))
+    if not found:
+        return None, None
+    _, c, j = max(found, key=lambda f: f[0])
+    return j, c
+
+
+def league_url() -> str:
+    lid = league_id_or_none()
+    lid = lid if lid != "\0" else "<Liga-ID>"
+    return f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leagues/{lid}?view=mRoster&view=mTeam"
+
+
+def fmt_age(seconds: float) -> str:
+    h = seconds / 3600
+    return f"{h * 60:.0f} Min." if h < 1 else f"{h:.0f} Std." if h < 48 else f"{h / 24:.0f} Tagen"
 
 
 def league_id_or_none() -> str:
@@ -135,8 +165,10 @@ def refresh(args=None) -> dict:
         except json.JSONDecodeError:
             raise SystemExit(f"{Path(explicit).name} ist kein JSON (als 'Webseite, nur HTML' speichern oder den Text der Seite kopieren und als .json ablegen).")
         raise SystemExit(f"{Path(explicit).name} enthält keine ESPN-Teamliste (falsche Seite gespeichert? Die URL braucht view=mRoster und view=mTeam).")
+    saved_at = None
     if j is not None:
-        src = f"Datei {path.name} (Stand {time.strftime('%d.%m. %H:%M', time.localtime(path.stat().st_mtime))})"
+        saved_at = path.stat().st_mtime
+        src = f"Datei {path.name} (gespeichert {time.strftime('%d.%m. %H:%M', time.localtime(saved_at))}, vor {fmt_age(time.time() - saved_at)})"
         if path != LEAGUE_JSON and not explicit:
             print(f"Hinweis: die Liga-Daten lagen in {path} - am besten umbenennen in draft_app/espn_league.json.")
     else:
@@ -158,12 +190,23 @@ def refresh(args=None) -> dict:
             new[ALIASES[k_new]] = new.pop(k_new)
     ROSTERS_JSON.write_text(json.dumps(new, indent=1, ensure_ascii=False))
     print(f"Quelle: {src} · {len(new)} Teams, {sum(len(v) for v in new.values())} Spieler -> league_rosters.json")
+    counted = {(t.get("name") or t.get("nickname") or f"Team {t.get('id')}").strip(): int((t.get("transactionCounter") or {}).get("trades") or 0)
+               for t in j.get("teams", [])}
+    if any(counted.values()):                                   # ESPN counts every trade a team has made: a sanity check for "is my file recent?"
+        print(f"ESPN-Zähler in dieser Datei: {sum(counted.values()) // 2} Trade(s) ({', '.join(f'{t} {n}' for t, n in counted.items() if n)})")
+    if saved_at is not None and time.time() - saved_at > 3 * 3600:
+        print(f"ACHTUNG: Die Datei ist {fmt_age(time.time() - saved_at)} alt. `refresh` fragt ESPN nicht selbst ab, es liest nur diese gespeicherte Datei.\n"
+              f"  Seit einem neuen Trade/Add/Drop: im eingeloggten Chrome diese Adresse öffnen und mit Cmd+S als draft_app/espn_league.json speichern (alte Datei ersetzen):\n"
+              f"  {league_url()}")
     if old:
         where_old = {names.name_key(p): t for t, ps in old.items() for p in ps}
         where_new = {names.name_key(p): (t, p) for t, ps in new.items() for p in ps}
         moves = [(p, where_old[k], t) for k, (t, p) in where_new.items() if k in where_old and where_old[k] != t]
         adds = [(p, t) for k, (t, p) in where_new.items() if k not in where_old]
         drops = [(p, where_old[k]) for k in where_old if k not in where_new for p in [next((x for ps in old.values() for x in ps if names.name_key(x) == k), k)]]
+        if not (moves or adds or drops):
+            print("\nKeine Veränderung gegenüber dem letzten Stand."
+                  + (" Wenn du einen neuen Trade erwartest: die Datei ist vermutlich älter als der Trade (siehe oben)." if saved_at is not None else ""))
         print(f"\nTrades / Wechsel seit dem letzten Stand: {len(moves)}")
         for p, a, b in sorted(moves, key=lambda m: (m[1], m[2])):
             print(f"  {p}: {a} -> {b}")

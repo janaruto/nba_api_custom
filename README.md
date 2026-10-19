@@ -55,7 +55,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 62 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 65 Tests, ohne Netzwerk
 ```
 
 | Aufgabe | Befehl |
@@ -88,7 +88,7 @@ Die persönlichen Dateien (Liga-ID, Eigentümername, Kader, ESPN-Liga-Daten) lie
 | `draft_app/league_tools.py`, `league.sh` | Kader aller Teams aktualisieren, Rangliste mit Siegchancen, Trade-Vorschläge, Angebote, Wunschspieler |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 62 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
+| `draft_app/tests/` | 65 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -506,14 +506,17 @@ Das Skript aktualisiert zuerst die ESPN-Verletzungen. **Die Kader stehen in `lea
 
 ESPNs Liga-Daten sind nur eingeloggt abrufbar. Der sichere Weg ohne Zugangsdaten im Werkzeug: im eingeloggten Chrome die Adresse
 `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leagues/<Liga-ID>?view=mRoster&view=mTeam` öffnen und die Seite mit Cmd+S als **`draft_app/espn_league.json`** speichern.
-Das Werkzeug erkennt die Datei auch unter falschem Namen (Dateien mit einer ESPN-Teamliste in `draft_app/espn_auth.json` oder `~/Downloads/*espn*.json`) und meldet, was es geprüft hat. Cookie-Dateien hält es nie für Liga-Daten.
+**`refresh` fragt ESPN nicht selbst ab, es liest nur diese gespeicherte Datei.** Nach jedem neuen Trade, Add oder Drop muss die Seite deshalb neu gespeichert werden (die alte Datei ersetzen), sonst bleibt der Stand stehen.
+Das Werkzeug hilft dabei: Es zeigt, wie alt die Datei ist, warnt ab 3 Stunden und druckt die Adresse; es zeigt ESPNs eigenen Trade-Zähler aus der Datei (`transactionCounter`), an dem man sieht, ob ein Trade schon enthalten ist;
+und es meldet „Keine Veränderung“, wenn nichts neu ist. Es erkennt die Datei auch unter falschem Namen (mit einer ESPN-Teamliste in `draft_app/espn_auth.json` oder als `*espn*`/`*<Liga-ID>*` in `~/Downloads` und `~/Desktop`, auch ohne Endung
+oder als „Webseite, nur HTML“ gespeichert); gibt es mehrere, gewinnt die **neueste**. Cookie-Dateien hält es nie für Liga-Daten.
 Optional lassen sich ESPN-Cookies (`ESPN_S2`, `ESPN_SWID` als Umgebungsvariablen oder in `draft_app/espn_auth.json`) hinterlegen, um direkt abzurufen; sie bleiben lokal, werden nie gedruckt und nie committet.
 
 ---
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 62 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 65 Tests):
 
 | Datei | Prüft |
 |---|---|
