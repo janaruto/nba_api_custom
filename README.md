@@ -11,7 +11,7 @@ und **was entschieden wurde** (Entscheidungslog). Alle Zahlen stammen, wo nichts
 
 ## Inhalt
 
-1. [Überblick](#1-überblick) · 2. [Einrichtung und Schnellstart](#2-einrichtung-und-schnellstart) · 3. [Repo-Aufbau](#3-repo-aufbau) · 4. [Die Liga](#4-die-liga)
+1. [Überblick](#1-überblick) · 2. [Einrichtung und Befehle](#2-einrichtung-und-befehle-auf-einen-blick) · 3. [Repo-Aufbau](#3-repo-aufbau) · 4. [Die Liga](#4-die-liga)
 5. [Daten](#5-daten) · 6. [Methodik und Theorie](#6-methodik-und-theorie) · 7. [Befunde](#7-befunde) · 8. [Entscheidungslog](#8-entscheidungslog)
 9. [Annahmen, Grenzen, bekannte Auffälligkeiten](#9-annahmen-grenzen-bekannte-auffälligkeiten) · 10. [Betrieb im Detail](#10-betrieb-im-detail) · 11. [Tests](#11-tests)
 12. [Datenschutz und Sicherheit](#12-datenschutz-und-sicherheit) · 13. [Offene Fragen](#13-offene-fragen) · 14. [Herkunft, Lizenz, Verlauf](#14-herkunft-lizenz-verlauf)
@@ -48,29 +48,74 @@ zwischen Kadern, Strategien und Trades.
 
 ---
 
-## 2. Einrichtung und Schnellstart
+## 2. Einrichtung und Befehle auf einen Blick
 
-Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (eine x86-conda-Umgebung läuft ohne Rosetta nicht).
+### 2.1 Einrichtung (einmalig)
+
+Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (eine x86-conda-Umgebung läuft ohne Rosetta nicht). Alle Befehle werden im Repo-Ordner ausgeführt.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 72 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 80 Tests, ohne Netzwerk
+./draft_app/league.sh login                             # ESPN-Zugang für den automatischen Kader-Abruf (Abschnitt 10.4)
 ```
 
-| Aufgabe | Befehl |
-|---|---|
-| Daten holen, projizieren, Pool exportieren (rund 9 Minuten, danach zwischengespeichert in `cache/`) | `.venv/bin/python -m nbconvert --to notebook --execute --inplace fantasy_draft_2026_27_v4_engine.ipynb` |
-| Draft-Abend starten (Verletzungen aktualisieren, ESPN-Empfänger, App auf `http://localhost:8502`) | `./draft_app/start_draft_night.sh` (`--reset` leert vor dem echten Draft das Log) |
-| Aufstellung für Matchup-Woche N | `./draft_app/weekly.sh N` oder `./draft_app/weekly.sh --opponent "Teamname"` |
-| Einmalig: ESPN-Zugang für den automatischen Kader-Abruf einrichten (Abschnitt 10.4) | `./draft_app/league.sh login` |
-| Alle Kader aktualisieren, Rangliste, Trade-Ideen | `./draft_app/league.sh all` |
-| Jemand fragt nach deinem Spieler: was zurückverlangen? | `./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray"` |
-| Du willst einen Spieler: Angebote, Stat-Veränderung, Nachricht | `./draft_app/league.sh want "Evan Mobley"` |
-| ... mit Trade-Grösse (wie viele Spieler auf jeder Seite; `--get` zählt den Wunschspieler mit), ohne bestimmte Spieler anzubieten | `./draft_app/league.sh want "Evan Mobley" --give 2 --get 2 --keep "Jamal Murray;Devin Booker"` (Zahl oder Bereich 1–3, mehrere Wunschspieler mit `;`, `--skip` = nicht mitverlangen, `--top N` = Optionen je Kategorie) |
-
-Die persönlichen Dateien (Liga-ID, Eigentümername, Kader, ESPN-Liga-Daten) liegen nur lokal und sind in `.gitignore` (Abschnitt 12). Für die Liga-Werkzeuge braucht es
+Persönliche Dateien (Liga-ID, Eigentümername, Kader, ESPN-Zugang) liegen nur lokal und sind in `.gitignore` (Abschnitt 12). Für die Liga-Werkzeuge braucht es
 `draft_app/local_config.json` mit `{"league_id": <ID aus der ESPN-URL>, "owner_names": ["<Name im Draft-Room>"]}`.
+
+### 2.2 Befehle auf einen Blick
+
+Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. Ein Befehl pro Zeile; in eckigen Klammern steht, was optional ist.
+
+**Daten und Modell**
+
+| Befehl | Wirkung |
+|---|---|
+| `.venv/bin/python -m nbconvert --to notebook --execute --inplace fantasy_draft_2026_27_v4_engine.ipynb` | Spielprotokolle, Kader, ESPN-Daten holen, projizieren, validieren, `player_pool.csv` und `league_meta.json` exportieren (rund 9 Minuten, danach zwischengespeichert in `cache/`; zum Neuladen `cache/` löschen) |
+| `.venv/bin/python draft_app/refresh_injuries.py` | ESPN-Verletzungsstatus holen (`injuries.json`); die Wrapper tun das selbst |
+
+**Draft-Abend**
+
+| Befehl | Wirkung |
+|---|---|
+| `./draft_app/start_draft_night.sh [--reset]` | Verletzungen aktualisieren, ESPN-Empfänger und App starten (`http://localhost:8502`); `--reset` leert das Draft-Log, nur vor dem echten Draft |
+| `.venv/bin/python -m streamlit run draft_app/app.py` | nur die App |
+| `.venv/bin/python draft_app/bridge.py` | nur den ESPN-Empfänger (Port 8765, `BRIDGE_PORT` ändert ihn) |
+
+**Matchup und Wochen-Aufstellung** (`weekly.sh`)
+
+| Befehl | Wirkung |
+|---|---|
+| `./draft_app/weekly.sh` | das laufende Matchup (oder das nächste) gegen den Gegner aus dem Spielplan: Siegchance, beste Aufstellung, Kategorien |
+| `./draft_app/weekly.sh N` | dasselbe für Matchup-Woche N (1–18) |
+| `./draft_app/weekly.sh --opponent "Brick City" [--start 2026-10-20 --end 2026-10-25]` | beliebiger Gegner, kommender Montag bis Sonntag oder eigene Daten |
+| `./draft_app/weekly.sh N --swap "Kyle Filipowski=Jalen Suggs"` | **Was-wäre-wenn:** Suggs spielt statt Filipowski; die Siegchance wird neu gerechnet und die beste Aufstellung für diesen Fall genannt. Mehrere Tausche: `"A=B;C=D"` oder `--swap` wiederholen |
+| `./draft_app/weekly.sh N --swap "Kyle Filipowski=Evan Mobley"` | ist der Zweite nicht in deinem Kader, gilt es als Trade/Add (der Erste geht, der Zweite kommt) |
+| `./draft_app/weekly.sh N [--team "Name"] [--refresh]` | anderes Team als Perspektive; `--refresh` lädt den NBA-Spielplan neu |
+| `./draft_app/weekly.sh --init-rosters` | `league_rosters.json` aus dem Draft-Log erzeugen (nur einmal nötig, falls kein ESPN-Zugang) |
+
+**Liga-Werkzeuge** (`league.sh`; holen vor jeder Auswertung die Kader live von ESPN, sobald `login` eingerichtet ist)
+
+| Befehl | Wirkung |
+|---|---|
+| `./draft_app/league.sh login` | einmalig: ESPN-Zugang einrichten (Eingabe unsichtbar, wird gegen ESPN geprüft) |
+| `./draft_app/league.sh refresh [--file Datei] [--brief]` | Kader aller Teams aktualisieren und Trades/Adds/Drops seit dem letzten Lauf zeigen; `--file` liest nur diese gespeicherte Datei |
+| `./draft_app/league.sh rank` | Rangliste mit Siegchance pro Woche, erwarteten Siegen, Top-4- und Platz-1-Chance, gefährlichsten Gegnern |
+| `./draft_app/league.sh suggest` | Trade-Ideen für dich (Ein-gegen-Eins mit allen Teams): Win-Win und für den Manager faire |
+| `./draft_app/league.sh all` | Kader aktualisieren, Rangliste und Trade-Ideen in einem Lauf |
+| `./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray[;Zweiter]"` | jemand fragt nach deinen Spielern: was kannst du zurückverlangen? |
+| `./draft_app/league.sh want "Evan Mobley"` | du willst einen Spieler: drei Optionen (beide profitieren, grösster Gewinn für dich, fair für den Manager) mit Stat-Veränderung und Nachrichtenentwurf |
+| `./draft_app/league.sh want "Evan Mobley" --give 2 --get 2 [--keep "A;B"] [--skip "C"] [--top N]` | Trade-Grösse festlegen (Zahl oder Bereich 1–3; `--get` zählt den Wunschspieler mit), eigene Spieler schützen (`--keep`), Spieler des Partners nicht mitverlangen (`--skip`), Optionen je Kategorie (`--top`); mehrere Wunschspieler mit `;` |
+| `LEAGUE_OFFLINE=1 ./draft_app/league.sh rank` | ohne Live-Abruf, mit der gespeicherten Datei |
+
+**Prüfen**
+
+| Befehl | Wirkung |
+|---|---|
+| `.venv/bin/python -m pytest` | alle 80 Tests (kein Netzwerk) |
+
+Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ich), vor dem Matchup `./draft_app/weekly.sh` (beste Aufstellung), bei einem Tauschgedanken `--swap`, bei einem Angebot `offer`/`want`.
 
 ---
 
@@ -89,7 +134,7 @@ Die persönlichen Dateien (Liga-ID, Eigentümername, Kader, ESPN-Liga-Daten) lie
 | `draft_app/league_tools.py`, `league.sh` | Kader aller Teams aktualisieren, Rangliste mit Siegchancen, Trade-Vorschläge, Angebote, Wunschspieler |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 72 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
+| `draft_app/tests/` | 80 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -287,6 +332,9 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
 3. Kategorie-Momente beider Teams, `P(Kategorie)` gegen den konkreten Gegner (6.5), `P(Matchup)` wie in 6.6.
 4. **Erschöpfende Suche** über alle `C(13, 10) = 286` Zehner-Aufstellungen, gefiltert auf legal (Positionsplätze, höchstens 4 Center); die mit der höchsten Siegchance gewinnt. Der Gegner spielt vermutlich sein bestes legales Zehner gegen ein neutrales Feld (geraten).
 5. Ausgabe: Start/Bank mit Platz, Spielen, Wochensummen, Gewinnchance je Kategorie und die nächstbesten Änderungen (ein Starter gegen einen Bankspieler).
+6. **Was-wäre-wenn (`--swap "A=B"`).** Spielt B statt A (beide in deinem Kader), läuft dieselbe erschöpfende Suche mit der Vorgabe „B startet, A sitzt“; die Ausgabe nennt die neu gerechnete Siegchance, den Unterschied zur freien Bestleistung in Prozentpunkten, die beste Aufstellung unter dieser Vorgabe
+   (und die bessere ohne Vorgabe, falls es eine gibt) und die Kategorien, die sich am stärksten bewegen. Steht B nicht in deinem Kader, wird ein Trade/Add angenommen: A verlässt den Kader, B kommt dazu (seine Zeile kommt bei Bedarf aus ESPNs Projektion), und die beste Aufstellung des neuen Kaders wird gesucht.
+   Ohne `--week` wählt das Skript das laufende Matchup, zwischen zwei Wochen das nächste.
 
 **Liga-Werkzeuge** (`league_tools.py`).
 
@@ -448,6 +496,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E24 | 18. Okt. | Rookies/Neuzugänge in den Liga-Werkzeugen mit ESPNs Projektion bewerten | Bis zur ersten NBA-Spielzeit gibt es nichts Besseres; Auslassen verzerrte die Rangliste | Übergangslösung |
 | E25 | 18. Okt. | `want`: Trade-Grösse frei wählbar und mehrere Optionen statt „dem einen besten“ | Was „am besten“ ist, hängt vom Ziel ab (beide profitieren, mein Gewinn, Akzeptanz beim Manager); redundante Zugaben ohne Wirkung werden verworfen; grosse Suchen erst grob vorgefiltert | Näherung nur für die Vorauswahl, die Ausgabe ist immer genau gerechnet |
 | E26 | 19. Okt. | Kader live von ESPN holen (`league.sh login` einmalig, Cookies in `espn_auth.json`, Rechte 600), vor jeder Auswertung und vor der Wochen-Aufstellung | Das Speichern der Seite von Hand wurde nach einem Trade vergessen, und das Werkzeug zeigte dann „keine Veränderung“; die Eingabe der Werte macht der Nutzer selbst, sie werden nie gedruckt | Cookies laufen ab (dann Rückfall auf die gespeicherte Datei und Hinweis); Auslesen der Chrome-Cookies per Programm wurde bewusst nicht gebaut |
+| E27 | 19. Okt. | `weekly.sh`: Woche automatisch wählen; `--swap` rechnet die Siegchance für „B statt A“ neu und nennt immer die beste Aufstellung dazu (Vorgabe „startet“/„sitzt“ in der erschöpfenden Suche) | Vor jedem Matchup stellt sich die Frage „was, wenn ich X statt Y bringe?“; mit Vorgabe statt Einzeltausch sieht man auch, was sich im Rest der Aufstellung ändert | Ist B nicht im Kader, gilt es als Trade/Add (A geht, B kommt) |
 
 ---
 
@@ -501,7 +550,7 @@ Ziel: Die App erfährt den aufgerufenen Spieler, das aktuelle Gebot und jeden Ve
 
 ### 10.3 Wochenroutine
 
-`./draft_app/weekly.sh N` (Woche aus `league_schedule.json`: 18 Matchups, Woche 1 vom 20. bis 25. Oktober, Woche 18 bis 28. Februar) oder `./draft_app/weekly.sh --opponent "Teamname"` für den kommenden Montag bis Sonntag.
+`./draft_app/weekly.sh` (laufendes Matchup) oder `./draft_app/weekly.sh N` (Woche aus `league_schedule.json`: 18 Matchups, Woche 1 vom 20. bis 25. Oktober, Woche 18 bis 28. Februar) oder `./draft_app/weekly.sh --opponent "Teamname"` für den kommenden Montag bis Sonntag.
 Das Skript aktualisiert zuerst die ESPN-Verletzungen. **Die Kader stehen in `league_rosters.json`**; `weekly.sh` aktualisiert sie vor jeder Auswertung aus ESPNs Liga-Daten (Abschnitt 10.4), ohne eingerichteten Zugang und ohne frisch gespeicherte Datei rechnet es mit dem letzten bekannten Stand.
 
 ### 10.4 Liga-Werkzeuge: Quelle der Kader
@@ -521,7 +570,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 72 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 80 Tests):
 
 | Datei | Prüft |
 |---|---|
@@ -530,7 +579,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 | `test_bench.py` | Bank-Vorschläge (Abdeckung verschiedener Starter, Center-Limit, Überlappung) |
 | `test_availability.py` | Verletzungs-Overlay und Überschreibungen |
 | `test_bridge.py` | Namens- und Team-Zuordnung, Ereignisverarbeitung, Token, Doppelverkäufe |
-| `test_weekly.py` | Spielplan, Spielzahlen je Team, beste legale Aufstellung, Team-Aliase |
+| `test_weekly.py` | Spielplan, Spielzahlen je Team, beste legale Aufstellung (auch mit Vorgaben „spielt“/„sitzt“), Wahl der Matchup-Woche, Was-wäre-wenn-Tausch, Team-Aliase |
 | `test_league_tools.py` | ESPN-JSON lesen, Trades/Neuverpflichtungen/Entlassungen, falsch benannte Dateien, Cookie-Dateien werden nie als Liga-Daten genommen; `want`: Grössenangaben, Kandidaten, die drei Optionen, Wegfall wirkungsloser Zugaben |
 | `test_espn_extra.py` | ESPN-Ersatzlinien: fehlende Spieler, Platzhalter, fehlende Projektion, kein Netzwerk wenn nichts zu tun ist, DD-Reihenfolge, ID-Kollisionen |
 

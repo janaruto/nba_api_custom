@@ -6,8 +6,12 @@ lineup lock means a four-game player is worth about twice a two-game player), ap
 per-game projection, models the two teams' category totals, and picks the ten starters (legal under the league's slot rules,
 max 4 centres on the roster) that maximise YOUR chance to win the matchup (6 of 10 categories, 5-5 counts half).
 
+    python draft_app/weekly_lineup.py                                # the current matchup week (or the next one) from league_schedule.json
     python draft_app/weekly_lineup.py --init-rosters                 # once: league_rosters.json from the draft log
     python draft_app/weekly_lineup.py --week 1                       # opponent and dates from league_schedule.json
+    python draft_app/weekly_lineup.py --week 1 --swap "Kyle Filipowski=Jalen Suggs"
+                                                                     # what if Suggs plays instead of Filipowski? (or: Suggs comes in from another roster)
+                                                                     # win chance is recomputed and the best lineup for that case is shown; several: "A=B;C=D"
     python draft_app/weekly_lineup.py --opponent "Brick City"        # this coming Mon-Sun, opponent given by hand
     python draft_app/weekly_lineup.py --opponent "Brick City" --start 2026-10-20 --end 2026-10-25 --refresh
 
@@ -21,6 +25,7 @@ import argparse
 import datetime as dt
 import itertools
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -139,16 +144,22 @@ def week_model(pool: pd.DataFrame, meta: dict, team_games: dict):
     return model, g, unknown.to_numpy(), out.to_numpy()
 
 
-def best_lineup(model, roster, vs_mom, calibrate=True):
-    """Exhaustive search over which ten of the roster start: returns (lineup, p_win, p_cat) against a fixed opponent."""
+def best_lineup(model, roster, vs_mom, calibrate=True, must=(), forbid=()):
+    """Exhaustive search over which ten of the roster start: returns (lineup, p_win, p_cat) against a fixed opponent, or None
+    if no legal lineup exists. `must` players have to start, `forbid` players have to sit (for 'what if X plays instead of Y')."""
     roster = [int(i) for i in roster]
+    must, forbid = set(int(i) for i in must), set(int(i) for i in forbid)
     ns = model.rules.n_starters
     if len(roster) <= ns:
+        if forbid & set(roster):
+            return None
         mom = model.team_moments(roster)
         pc = engine.phi((mom[0] - vs_mom[0]) / np.sqrt(mom[1] ** 2 + vs_mom[1] ** 2))
         return roster, float(engine.matchup_prob(pc, model.rules)), pc
     best = None
     for bench in itertools.combinations(roster, len(roster) - ns):
+        if (must & set(bench)) or not (forbid & set(roster)) <= set(bench):
+            continue
         st = [i for i in roster if i not in bench]
         if not engine.lineup_legal(model, st):
             continue
@@ -158,6 +169,90 @@ def best_lineup(model, roster, vs_mom, calibrate=True):
         if best is None or p > best[1]:
             best = (st, p, pc)
     return best
+
+
+def pick_week(periods, today: dt.date):
+    """The matchup week that contains `today`, else the next one that starts after it, else None (season over)."""
+    t = today.isoformat()
+    for p in periods:
+        if p["start"] <= t <= p["end"]:
+            return p
+    upcoming = [p for p in periods if p["start"] > t]
+    return min(upcoming, key=lambda p: p["start"]) if upcoming else None
+
+
+def parse_swaps(texts) -> list:
+    """['A=B;C=D', ...] -> [('A', 'B'), ('C', 'D')]; 'A=B' means: B plays instead of A ('->' works as well)."""
+    out = []
+    for text in texts or []:
+        for part in str(text).split(";"):
+            if not part.strip():
+                continue
+            m = re.split(r"\s*(?:=|->)\s*", part.strip(), maxsplit=1)
+            if len(m) != 2 or not m[0] or not m[1]:
+                raise SystemExit(f"--swap: '{part.strip()}' nicht verstanden. Format: \"Kyle Filipowski=Jalen Suggs\" (der Zweite spielt statt des Ersten).")
+            out.append((m[0].strip(), m[1].strip()))
+    return out
+
+
+def lineup_text(model, games, lineup) -> str:
+    slots = engine.assign_slots(model, lineup)
+    return ", ".join(f"{model.rules.slots[sl][0]} {model.names[slots[sl]]} ({int(round(games[slots[sl]]))})" for sl in sorted(slots))
+
+
+def swap_report(model, pool, games, my_roster, p_base, pcat_base, opp_mom, swaps, out_mask) -> None:
+    """Recompute the win chance for 'X plays instead of Y' (both on your roster: a lineup wish) or 'Y leaves, X joins' (X is on
+    another roster or a free agent: a hypothetical trade/add), and name the best lineup for that case."""
+    idx = names.build_index(pool["PLAYER_ID"], pool["PLAYER_NAME"])
+    pid2i = {int(p): i for i, p in enumerate(pool["PLAYER_ID"])}
+
+    def find(text):
+        hit = names.resolve_player(idx, text)
+        if hit is None:
+            close = names.suggest_players(idx, text)
+            raise SystemExit(f"--swap: Spieler '{text}' nicht im Pool." + (f" Meintest du: {', '.join(close)}?" if close else ""))
+        return pid2i[hit[0]]
+
+    roster, must, forbid, notes = list(my_roster), set(), set(), []
+    for out_n, in_n in swaps:
+        o, i = find(out_n), find(in_n)
+        if o not in roster:
+            raise SystemExit(f"--swap: {model.names[o]} steht nicht in deinem Kader.")
+        if o == i:
+            continue
+        if i in roster:
+            must.add(i); forbid.add(o)
+            notes.append(f"{model.names[i]} spielt statt {model.names[o]} (beide in deinem Kader)")
+        else:
+            roster = [x for x in roster if x != o] + [i]
+            forbid.discard(o)
+            notes.append(f"{model.names[o]} verlässt den Kader, {model.names[i]} ({pool['CURRENT_TEAM_ABBR'].iat[i]}) kommt dazu (Trade/Add)")
+    if must & forbid:
+        raise SystemExit("--swap: derselbe Spieler soll gleichzeitig spielen und sitzen.")
+    print(f"\n{'=' * 100}\nTausch-Rechnung\n{'=' * 100}")
+    for n_ in notes:
+        print("  " + n_)
+    for i in {i for _, n_ in swaps for i in [find(n_)]}:
+        if out_mask[i]:
+            print(f"  Achtung: {model.names[i]} ist bei ESPN OUT (zählt in dieser Woche kaum).")
+        elif games[i] <= 0:
+            print(f"  Achtung: {model.names[i]} hat in dieser Woche kein Spiel.")
+    wish = best_lineup(model, roster, opp_mom, must=must, forbid=forbid)
+    if wish is None:
+        print("  Mit diesen Vorgaben gibt es keine legale Aufstellung (Positionsplätze oder höchstens 4 Center).")
+        return
+    free = best_lineup(model, roster, opp_mom)
+    lu, p, pc = wish
+    print(f"  Ohne Tausch (beste Aufstellung):        Siegchance {100 * p_base:5.1f} %   ·   {pcat_base.sum():.2f} Kategorien erwartet")
+    print(f"  Mit Tausch (beste Aufstellung dazu):    Siegchance {100 * p:5.1f} %   ·   {pc.sum():.2f} Kategorien erwartet   ({100 * (p - p_base):+.1f} Prozentpunkte)")
+    print(f"  Aufstellung mit Tausch:  {lineup_text(model, games, lu)}")
+    print("  Bank:                    " + ", ".join(model.names[i] for i in roster if i not in lu))
+    deltas = sorted(((engine.LABEL[c], 100 * (pc[k] - pcat_base[k])) for k, c in enumerate(engine.CATS)), key=lambda z: -abs(z[1]))[:4]
+    print("  Kategorien (Gewinnchance in Prozentpunkten): " + ", ".join(f"{lab} {v:+.0f}" for lab, v in deltas if abs(v) >= 0.5))
+    if free is not None and free[1] > p + 1e-9:
+        print(f"  Ohne deine Vorgabe wäre mit diesem Kader {100 * free[1]:.1f} % möglich: {lineup_text(model, games, free[0])}")
+    print("  => " + ("Der Tausch lohnt sich." if p > p_base + 0.0005 else "Der Tausch schadet." if p < p_base - 0.0005 else "Kaum ein Unterschied.")
+          + f" Empfohlene Aufstellung für diese Woche: {'die mit dem Tausch' if p >= p_base - 1e-9 else 'die ohne Tausch (oben)'}.")
 
 
 def neutral_field(model, rosters: dict):
@@ -195,11 +290,17 @@ def run(args) -> int:
         print("league_rosters.json fehlt: wird aus dem Draft-Log erzeugt (danach nach Trades/Adds/Drops von Hand anpassen).")
         init_rosters()
     rosters_names = json.loads(ROSTERS_JSON.read_text())
-    pool, meta = load_pool_and_meta([n for ns in rosters_names.values() for n in ns])
+    swaps = parse_swaps(getattr(args, "swap", None))
+    pool, meta = load_pool_and_meta([n for ns in rosters_names.values() for n in ns] + [n for pair in swaps for n in pair])
     you = args.team or meta["your_team_name"]
 
     # week: dates and opponent
     opponent, start, end, label = args.opponent, args.start, args.end, ""
+    if not (args.week or opponent or start) and SCHEDULE_JSON.exists():           # no hint at all: the matchup that is on now (or next)
+        per = pick_week(json.loads(SCHEDULE_JSON.read_text())["periods"], dt.date.today())
+        if per is not None:
+            args.week = int(per["week"])
+            print(f"(Woche {args.week} automatisch gewählt: {per['start']} bis {per['end']})")
     if args.week and SCHEDULE_JSON.exists():
         per = next((p for p in json.loads(SCHEDULE_JSON.read_text())["periods"] if int(p["week"]) == args.week), None)
         if per is None:
@@ -302,6 +403,8 @@ def run(args) -> int:
     if flags:
         print("\nAchtung:", "; ".join(flags))
     print("\nGegnerische Aufstellung (angenommen: sein bestes Zehner):", ", ".join(model.names[i] for i in opp_lineup))
+    if swaps:
+        swap_report(model, pool, games, my_roster, p_win, pcat, opp_mom, swaps, out_mask)
     return 0
 
 
@@ -311,6 +414,9 @@ def main() -> int:
     ap.add_argument("--week", type=int, help="Matchup-Woche aus league_schedule.json (Gegner und Daten automatisch)")
     ap.add_argument("--start", help="Start YYYY-MM-DD (Standard: kommender Montag)")
     ap.add_argument("--end", help="Ende YYYY-MM-DD (Standard: Start + 6 Tage)")
+    ap.add_argument("--swap", action="append", metavar='"A=B"',
+                    help='Was-wäre-wenn: B spielt statt A, z. B. "Kyle Filipowski=Jalen Suggs" (mehrere mit ; trennen oder --swap wiederholen). '
+                         'Ist B nicht in deinem Kader, gilt es als Trade/Add (A geht, B kommt). Die Siegchance wird neu gerechnet und die beste Aufstellung genannt.')
     ap.add_argument("--team", help="dein Team (Standard: aus league_meta.json)")
     ap.add_argument("--rosters", help="Pfad zu einer anderen Roster-Datei")
     ap.add_argument("--refresh", action="store_true", help="NBA-Spielplan neu laden")

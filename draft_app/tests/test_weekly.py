@@ -58,3 +58,68 @@ def test_players_without_games_this_week_are_benched():
     roster = [0, 3, 5, 8, 12, 14, 2, 21, 30, 33, 36, 4, 9]
     lu, _, _ = wl.best_lineup(m, roster, opp)
     assert not ({0, 3, 5} & set(lu))
+
+
+# ── matchup week pick, what-if swaps ─────────────────────────────────────────────────────────────────
+PERIODS = [{"week": 1, "start": "2026-10-20", "end": "2026-10-25"}, {"week": 2, "start": "2026-10-26", "end": "2026-11-01"},
+           {"week": 3, "start": "2026-11-03", "end": "2026-11-08"}]
+
+
+def test_pick_week_takes_the_running_one_else_the_next_else_none():
+    assert wl.pick_week(PERIODS, dt.date(2026, 10, 22))["week"] == 1                 # inside week 1
+    assert wl.pick_week(PERIODS, dt.date(2026, 10, 19))["week"] == 1                 # before the season: the first week
+    assert wl.pick_week(PERIODS, dt.date(2026, 11, 2))["week"] == 3                  # in the gap between two weeks: the next one
+    assert wl.pick_week(PERIODS, dt.date(2026, 11, 8))["week"] == 3                  # last day included
+    assert wl.pick_week(PERIODS, dt.date(2026, 11, 9)) is None
+
+
+def test_parse_swaps_accepts_several_forms_and_rejects_nonsense():
+    assert wl.parse_swaps(["Kyle Filipowski=Jalen Suggs"]) == [("Kyle Filipowski", "Jalen Suggs")]
+    assert wl.parse_swaps(["A = B; C -> D", "E=F"]) == [("A", "B"), ("C", "D"), ("E", "F")]
+    assert wl.parse_swaps(None) == []
+    for bad in ("nur ein Name", "=B", "A="):
+        with pytest.raises(SystemExit):
+            wl.parse_swaps([bad])
+
+
+def _setup(n=40):
+    d = synthetic_pool(n=n)
+    d["CURRENT_TEAM_ABBR"] = "BOS"
+    m = engine.build_pool_model(d, engine.Rules(), games=np.full(len(d), 3.0))
+    opp = m.team_moments(list(range(15, 25)))
+    roster = [0, 3, 5, 8, 12, 14, 2, 21, 30, 33, 36, 4, 9]
+    return d, m, opp, roster
+
+
+def test_a_forced_swap_is_respected_and_can_never_beat_the_free_best():
+    d, m, opp, roster = _setup()
+    lu, p, _ = wl.best_lineup(m, roster, opp)
+    out = lu[0]
+    inn = next(i for i in roster if i not in lu)
+    lu2, p2, _ = wl.best_lineup(m, roster, opp, must={inn}, forbid={out})
+    assert inn in lu2 and out not in lu2 and engine.lineup_legal(m, lu2)
+    assert p2 <= p + 1e-12
+
+
+def test_impossible_constraints_give_none():
+    d, m, opp, roster = _setup()
+    assert wl.best_lineup(m, roster, opp, forbid=set(roster[:4])) is None            # only 3 bench places for 4 players who must sit
+    assert wl.best_lineup(m, roster, opp, must=set(roster[:11])) is None             # 11 players cannot all start
+
+
+@pytest.mark.parametrize("swap", [("P0", "P1"), ("P0", "P30"), ("P0", "P25")])
+def test_swap_report_runs_for_lineup_wishes_and_for_players_from_other_rosters(capsys, swap):
+    d, m, opp, roster = _setup()
+    wl.swap_report(m, d, np.full(len(d), 3.0), roster, 0.5, np.full(10, 0.5), opp, [swap], np.zeros(len(d), bool))
+    out = capsys.readouterr().out
+    assert "Tausch-Rechnung" in out and "Siegchance" in out and "Aufstellung mit Tausch" in out
+    if swap[1] == "P25":
+        assert "verlässt den Kader" in out and "P25" in out
+
+
+def test_swap_report_names_unknown_and_foreign_out_players(capsys):
+    d, m, opp, roster = _setup()
+    with pytest.raises(SystemExit):
+        wl.swap_report(m, d, np.full(len(d), 3.0), roster, 0.5, np.full(10, 0.5), opp, [("P0", "Nobody Atall")], np.zeros(len(d), bool))
+    with pytest.raises(SystemExit):                                                  # P20 is not on the roster, so it cannot be swapped out
+        wl.swap_report(m, d, np.full(len(d), 3.0), roster, 0.5, np.full(10, 0.5), opp, [("P20", "P0")], np.zeros(len(d), bool))
