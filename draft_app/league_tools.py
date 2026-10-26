@@ -293,11 +293,12 @@ def refresh(args=None, brief: bool = False) -> dict:
 
 # ── the league model ─────────────────────────────────────────────────────────────────────────────────
 class League:
-    def __init__(self):
+    def __init__(self, season=True, min_games=1, shrink=0.0, refresh=False):
         if not ROSTERS_JSON.exists():
             wl.init_rosters()
         raw = json.loads(ROSTERS_JSON.read_text())
-        self.pool, self.meta = wl.load_pool_and_meta([n for ns in raw.values() for n in ns])   # rookies/new signings: ESPN's projection
+        # rookies/new signings: ESPN's projection; every player with games this season: this season's per-game averages
+        self.pool, self.meta = wl.load_pool_and_meta([n for ns in raw.values() for n in ns], season=season, min_games=min_games, shrink=shrink, refresh=refresh)
         self.espn_filled, self.espn_missing = self.pool.attrs.get("espn_filled", []), self.pool.attrs.get("espn_missing", [])
         self.rules = engine.Rules.from_meta(self.meta)
         self.model = engine.build_pool_model(self.pool, self.rules, self.meta["league_rates"])
@@ -478,7 +479,8 @@ def stat_line(L: League, i: int) -> str:
     for lab, col in STAT_COLS:
         v = p[col].iat[i]
         parts.append(f"{lab} {v:.3f}".replace("0.", ".") if lab.endswith("%") else f"{lab} {v:.1f}" if lab != "DD" else f"DD {v:.2f}")
-    return f"{L.model.names[i]} ({p.POS_ELIGIBLE_STR.iat[i]}, {p.CURRENT_TEAM_ABBR.iat[i]}; {p.EXP_GP.iat[i]:.0f} Spiele erw.): " + ", ".join(parts)
+    seen = f"; Saison-Schnitt aus {int(p.SEASON_GP.iat[i])} Sp." if "SEASON_GP" in p and p.SEASON_SRC.iat[i] != "Projektion" else ""
+    return f"{L.model.names[i]} ({p.POS_ELIGIBLE_STR.iat[i]}, {p.CURRENT_TEAM_ABBR.iat[i]}; {p.EXP_GP.iat[i]:.0f} Spiele erw.{seen}): " + ", ".join(parts)
 
 
 def cat_delta_text(d, k=3) -> str:
@@ -728,12 +730,16 @@ def cmd_want(L: League, args):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--projection", action="store_true", help="Per-Spiel-Werte aus der Projektion vor der Saison statt aus den Schnitten der laufenden Saison")
+    common.add_argument("--min-games", type=int, default=1, help="Saison-Schnitte erst ab so vielen Spielen verwenden (Standard 1)")
+    common.add_argument("--shrink", type=float, default=0.0, help="Schnitt und Projektion nach Stichprobe mischen: Gewicht = Spiele/(Spiele+K); 0 = reiner Schnitt (Standard), 10 = vorsichtig")
     r = sub.add_parser("refresh"); r.add_argument("--file", help="nur diese gespeicherte Datei lesen (kein Live-Abruf)")
     r.add_argument("--brief", action="store_true", help="knappe Ausgabe: eine Zeile, dazu Veränderungen und Warnungen")
     sub.add_parser("login", help="einmalig: ESPN-Zugang für den automatischen Kader-Abruf einrichten")
-    sub.add_parser("rank"); sub.add_parser("suggest"); sub.add_parser("all")
-    o = sub.add_parser("offer"); o.add_argument("--team", required=True); o.add_argument("--asks", required=True, help='deine Spieler, nach denen gefragt wird, mit ; getrennt')
-    w = sub.add_parser("want"); w.add_argument("player", help='Wunschspieler, mehrere vom selben Team mit ; getrennt')
+    sub.add_parser("rank", parents=[common]); sub.add_parser("suggest", parents=[common]); sub.add_parser("all", parents=[common])
+    o = sub.add_parser("offer", parents=[common]); o.add_argument("--team", required=True); o.add_argument("--asks", required=True, help='deine Spieler, nach denen gefragt wird, mit ; getrennt')
+    w = sub.add_parser("want", parents=[common]); w.add_argument("player", help='Wunschspieler, mehrere vom selben Team mit ; getrennt')
     w.add_argument("--give", help="wie viele deiner Spieler im Trade (Zahl oder Bereich, 1-3; Standard 1-2)")
     w.add_argument("--get", help="wie viele Spieler du bekommst, Wunschspieler eingerechnet (Standard: nur die Wunschspieler; bis 3)")
     w.add_argument("--keep", help="deine Spieler, die nicht angeboten werden, mit ; getrennt")
@@ -749,7 +755,8 @@ def main() -> int:
             refresh(args, brief=args.cmd != "all")
         except SystemExit as e:
             print(f"(Kader nicht aktualisiert: {e}) rechne mit dem letzten Stand in league_rosters.json")
-    L = League()
+    L = League(season=not args.projection, min_games=args.min_games, shrink=args.shrink)
+    print(wl.season_text(L.pool))
     if args.cmd in ("rank", "all"):
         cmd_rank(L)
     if args.cmd in ("suggest", "all"):

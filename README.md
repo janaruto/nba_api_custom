@@ -57,7 +57,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 82 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 90 Tests, ohne Netzwerk
 ./draft_app/league.sh login                             # ESPN-Zugang für den automatischen Kader-Abruf (Abschnitt 10.4)
 ```
 
@@ -92,7 +92,8 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 | `./draft_app/weekly.sh --opponent "Brick City" [--start 2026-10-20 --end 2026-10-25]` | beliebiger Gegner, kommender Montag bis Sonntag oder eigene Daten |
 | `./draft_app/weekly.sh N --swap "Kyle Filipowski=Jalen Suggs"` | **Was-wäre-wenn:** Suggs spielt statt Filipowski; die Siegchance wird neu gerechnet und die beste Aufstellung für diesen Fall genannt. Mehrere Tausche: `"A=B;C=D"` oder `--swap` wiederholen |
 | `./draft_app/weekly.sh N --swap "Kyle Filipowski=Evan Mobley"` | ist der Zweite nicht in deinem Kader, gilt es als Trade/Add (der Erste geht, der Zweite kommt) |
-| `./draft_app/weekly.sh N [--team "Name"] [--refresh]` | anderes Team als Perspektive; `--refresh` lädt den NBA-Spielplan neu |
+| `./draft_app/weekly.sh N [--team "Name"] [--refresh]` | anderes Team als Perspektive; `--refresh` lädt NBA-Spielplan und Saison-Schnitte neu (sonst höchstens drei Stunden alt) |
+| `./draft_app/weekly.sh N --projection` / `--shrink 10` / `--min-games 3` | Standard: **Schnitte der laufenden Saison** als Per-Spiel-Werte (Spieler ohne Spiel: Projektion). `--projection` rechnet mit der Projektion vor der Saison, `--shrink K` mischt Schnitt und Projektion nach Spielzahl (Gewicht = Spiele/(Spiele+K)), `--min-games N` nutzt Schnitte erst ab N Spielen. Dasselbe gilt für `rank`, `suggest`, `all`, `offer`, `want` |
 | `./draft_app/weekly.sh N --ignore-out` / `--expected-games` | Standard ist: **jeder Spieler absolviert alle Spiele seines Teams** (ESPN-OUT ausgenommen). `--ignore-out` zählt auch OUT-Spieler mit, `--expected-games` rechnet stattdessen Teamspiele × Saison-Verfügbarkeit |
 | `./draft_app/weekly.sh --init-rosters` | `league_rosters.json` aus dem Draft-Log erzeugen (nur einmal nötig, falls kein ESPN-Zugang) |
 
@@ -108,13 +109,14 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 | `./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray[;Zweiter]"` | jemand fragt nach deinen Spielern: was kannst du zurückverlangen? |
 | `./draft_app/league.sh want "Evan Mobley"` | du willst einen Spieler: drei Optionen (beide profitieren, grösster Gewinn für dich, fair für den Manager) mit Stat-Veränderung und Nachrichtenentwurf |
 | `./draft_app/league.sh want "Evan Mobley" --give 2 --get 2 [--keep "A;B"] [--skip "C"] [--top N]` | Trade-Grösse festlegen (Zahl oder Bereich 1–3; `--get` zählt den Wunschspieler mit), eigene Spieler schützen (`--keep`), Spieler des Partners nicht mitverlangen (`--skip`), Optionen je Kategorie (`--top`); mehrere Wunschspieler mit `;` |
+| `./draft_app/league.sh rank --shrink 10` | Rangliste mit vorsichtigerer Mischung aus Saison-Schnitt und Projektion (alle Liga-Befehle nehmen `--projection`, `--shrink K`, `--min-games N`) |
 | `LEAGUE_OFFLINE=1 ./draft_app/league.sh rank` | ohne Live-Abruf, mit der gespeicherten Datei |
 
 **Prüfen**
 
 | Befehl | Wirkung |
 |---|---|
-| `.venv/bin/python -m pytest` | alle 82 Tests (kein Netzwerk) |
+| `.venv/bin/python -m pytest` | alle 90 Tests (kein Netzwerk) |
 
 Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ich), vor dem Matchup `./draft_app/weekly.sh` (beste Aufstellung), bei einem Tauschgedanken `--swap`, bei einem Angebot `offer`/`want`.
 
@@ -133,9 +135,10 @@ Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ic
 | `draft_app/names.py` | Namensabgleich ESPN ↔ Pool (akzentfrei, ohne Suffixe) |
 | `draft_app/weekly_lineup.py`, `weekly.sh` | Wochen-Aufstellung: Spielplan, Spielzahlen je Team, beste legale Zehn |
 | `draft_app/league_tools.py`, `league.sh` | Kader aller Teams aktualisieren, Rangliste mit Siegchancen, Trade-Vorschläge, Angebote, Wunschspieler |
+| `draft_app/season_stats.py` | Per-Spiel-Schnitte der laufenden Saison aus den Spielprotokollen (statt der Projektion); für Wochen-Aufstellung und alle Liga-Werkzeuge |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 82 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien |
+| `draft_app/tests/` | 90 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien, Saison-Schnitte |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -168,7 +171,7 @@ Ratio-Kategorien (FG%, FT%, PPM) zählen als Team-Aggregat ΣZähler/ΣNenner, n
 
 | Quelle | Inhalt | Zugriff |
 |---|---|---|
-| stats.nba.com über `nba_api` | `LeagueGameLog` (Spielprotokolle, vier Saisons 2022-23 bis 2025-26), `CommonPlayerInfo` (Alter, Grösse, Geburtsdatum), `CommonTeamRoster` (Kader 2026-27), `ScheduleLeagueV2` (Spielplan) | öffentlich, drosselt Anfragen: gestaffelt mit Pausen, Zwischenspeicher in `cache/` |
+| stats.nba.com über `nba_api` | `LeagueGameLog` (Spielprotokolle, vier Saisons 2022-23 bis 2025-26), `CommonPlayerInfo` (Alter, Grösse, Geburtsdatum), `CommonTeamRoster` (Kader 2026-27), `ScheduleLeagueV2` (Spielplan), `LeagueGameLog` der laufenden Saison 2026-27 (Schnitte, Abschnitt 6.13) | öffentlich, drosselt Anfragen: gestaffelt mit Pausen, Zwischenspeicher in `cache/` |
 | ESPN Fantasy, Spielerliste (`lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/players?view=kona_player_info`) | Auktionswerte, Positions-Berechtigung (`eligibleSlots`), Verletzungsstatus, ESPN-Rang für H2H-Kategorien, **eigene Projektion** (Statistik-Quelle `102027`) | öffentlich, kein Login |
 | ESPN Liga-Daten (`.../leagues/<ID>?view=mRoster&view=mTeam`) | Kader aller Teams, Teamnamen | nur eingeloggt (ohne Login HTTP 401); automatisch mit deinen Cookies (`league.sh login`, einmalig) oder von Hand durch „Seite im eingeloggten Browser speichern“ (Abschnitt 10.4) |
 | ESPN-Draft-Room (Browser) | aufgerufener Spieler, Gebot, Verkäufe | Userscript liest nur mit (Abschnitt 10.2) |
@@ -367,6 +370,19 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
 
 Eine Rookie-Linie ist eine Schätzung ohne eine einzige NBA-Minute dahinter.
 
+### 6.13 Schnitte der laufenden Saison statt Projektion
+
+Vor dem Saisonstart ist die Projektion (6.1) die beste Schätzung. Sobald gespielt wird, rechnen die **Wochen-Aufstellung und alle Liga-Werkzeuge** (Rangliste, Trade-Ideen, `offer`, `want`) standardmässig mit dem, was die Spieler tatsächlich tun:
+`season_stats.py` holt mit einer Anfrage alle Spielprotokolle der Saison 2026-27 (stats.nba.com, `LeagueGameLog`, höchstens drei Stunden alt zwischengespeichert in `cache/season_stats_2026-27.csv`) und bildet je Spieler die Schnitte pro Spiel von Minuten, PTS, REB, AST, STL, BLK, 3PM, FGM, FGA, FTM, FTA
+und die **Double-Double-Rate** (Anteil der Spiele mit mindestens zwei Kategorien über 10). Ein Datensatz ohne Minuten gilt nicht als Spiel.
+
+* **Wer ersetzt wird:** jeder Spieler mit mindestens `--min-games` Spielen (Standard 1); wer noch kein Spiel hat (verletzt, nicht eingesetzt), behält die Projektion. Rookies und Neuzugänge mit ESPN-Linie (6.12) werden über den Namen zugeordnet, nie über eine Kennung (ESPN- und NBA-Kennungen können sich zufällig gleichen); zwei Spieler mit gleichem Namensschlüssel werden nicht geraten.
+* **Was gleich bleibt:** die Streuung pro Spiel (aus wenigen Spielen nicht schätzbar), die Positionen und die Saison-Verfügbarkeit der Liga-Werkzeuge. Die Wochen-Aufstellung rechnet ohnehin mit allen Spielen (6.12).
+* **Mischung nach Stichprobe (`--shrink K`):** Gewicht des Schnitts = `n / (n + K)` mit `n` Spielen; K = 0 ist der reine Saison-Schnitt (Standard, wie gewünscht), K = 10 traut einem Drei-Spiele-Schnitt nur 23 %. Das ist eine Faustregel der Bayes-Mischung, nicht angepasst.
+* **Anzeige:** Beide Werkzeuge nennen in einer Zeile, woher die Zahlen kommen („Schnitte der laufenden Saison bis 25.10. (318 Spieler, im Median 3 Spiele)“), die Wochen-Tabelle zeigt die Spiele der Saison je Spieler, und die Stat-Zeilen der Liga-Werkzeuge tragen „Saison-Schnitt aus N Sp.“.
+* **Grenze, wichtig:** Nach drei Spielen sind Schnitte sehr verrauscht. Beispiel Woche 2 (Stand 26. Okt.): Siegchance 66 % mit reinen Saison-Schnitten, 30 % mit `--shrink 10`, 23 % mit der Projektion; in der Rangliste fällt Brick City von Platz 5 (Projektion) auf Platz 14 (reine Schnitte).
+  Die Unterschiede kommen fast nur aus einzelnen Abenden (ein Spieler mit 0 Steals in zwei Spielen), nicht aus verlässlichem Wissen. Mit jeder Woche wird der Schnitt belastbarer; bis dahin ist `--shrink` die ehrlichere Zahl.
+
 ---
 
 ## 7. Befunde
@@ -501,6 +517,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E26 | 19. Okt. | Kader live von ESPN holen (`league.sh login` einmalig, Cookies in `espn_auth.json`, Rechte 600), vor jeder Auswertung und vor der Wochen-Aufstellung | Das Speichern der Seite von Hand wurde nach einem Trade vergessen, und das Werkzeug zeigte dann „keine Veränderung“; die Eingabe der Werte macht der Nutzer selbst, sie werden nie gedruckt | Cookies laufen ab (dann Rückfall auf die gespeicherte Datei und Hinweis); Auslesen der Chrome-Cookies per Programm wurde bewusst nicht gebaut |
 | E27 | 19. Okt. | `weekly.sh`: Woche automatisch wählen; `--swap` rechnet die Siegchance für „B statt A“ neu und nennt immer die beste Aufstellung dazu (Vorgabe „startet“/„sitzt“ in der erschöpfenden Suche) | Vor jedem Matchup stellt sich die Frage „was, wenn ich X statt Y bringe?“; mit Vorgabe statt Einzeltausch sieht man auch, was sich im Rest der Aufstellung ändert | Ist B nicht im Kader, gilt es als Trade/Add (A geht, B kommt) |
 | E28 | 19. Okt. | Wochen-Aufstellung und Tausch-Rechnung: jeder Spieler absolviert alle Spiele seines Teams (ESPN-OUT ausgenommen), für beide Teams; `--expected-games` und `--ignore-out` als Schalter | Die Saison-Verfügbarkeit (0.67) beschreibt das Jahr, nicht die einzelne Woche; man setzt die Aufstellung selbst und plant mit den Spielen, die anstehen | Macht die Prozente deutlicher (Woche 1: 31 % statt 55 %); Reihenfolge der Aufstellungen unkritisch |
+| E29 | 26. Okt. | Per-Spiel-Werte aus den Schnitten der laufenden Saison (reiner Schnitt als Standard) für die Wochen-Aufstellung **und alle Liga-Werkzeuge**; Projektion nur für Spieler ohne Spiel; `--shrink`, `--min-games`, `--projection` als Schalter | Nach Saisonstart zählt, was die Spieler tun; der Wunsch war ausdrücklich der aktuelle Schnitt, auch für die ganze Liga | Nach 3 Spielen sehr verrauscht (6.13): Siegchance Woche 2 zwischen 23 % und 66 %, je nach Schalter; `--shrink 10` ist vorsichtiger |
 
 ---
 
@@ -518,6 +535,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 10. **Liga-Werkzeuge rechnen mit durchschnittlichen Wochen.** Ein Trade kann in einer Woche mit wenigen Spielen anders aussehen; „fair“ ist eine Faustregel; die Saisonsimulation paart zufällig statt nach echtem Spielplan.
 11. **Die Mischung 50/50 mit ESPN ist nicht validiert.** Prüfbar erst mit der Saison.
 12. **Wochen-Aufstellung ohne Ausfall-Unsicherheit.** Mit „alle Spiele“ (6.12) sind die Siegchancen deutlicher als die Wirklichkeit, in der Spieler ausfallen; die Kalibrierung 0.66 wurde mit Ausfall-Varianz gefittet. Für die Reihenfolge der Aufstellungen ist das unkritisch, die absoluten Prozente sind eher zu extrem.
+13. **Schnitte der laufenden Saison sind früh verrauscht** (6.13). Standard ist der reine Schnitt, wie verlangt; `--shrink` und `--projection` zeigen die Spannweite.
 
 ---
 
@@ -575,7 +593,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 82 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 90 Tests):
 
 | Datei | Prüft |
 |---|---|

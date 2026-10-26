@@ -42,6 +42,7 @@ import availability  # noqa: E402
 import engine  # noqa: E402
 import espn_extra  # noqa: E402
 import names  # noqa: E402
+import season_stats  # noqa: E402
 
 SEASON = "2026-27"
 SCHEDULE_CACHE = ROOT / "cache" / f"schedule_{SEASON}.json"
@@ -83,10 +84,13 @@ def next_monday(today: dt.date) -> dt.date:
 
 
 # ── data ─────────────────────────────────────────────────────────────────────────────────────────────
-def load_pool_and_meta(rostered_names=None):
+def load_pool_and_meta(rostered_names=None, season=True, min_games=1, shrink=0.0, refresh=False):
     """Pool (injury-adjusted) and league meta. With `rostered_names`, every rostered player the model has no real line for
     (rookies, new signings, draft-night placeholders) gets ESPN's own projection instead - see espn_extra.py. Which players
-    that concerned is kept in pool.attrs['espn_filled'] / ['espn_missing']."""
+    that concerned is kept in pool.attrs['espn_filled'] / ['espn_missing'].
+    With `season` (default) the per-game means are THIS season's averages so far for every player with at least `min_games` games
+    (season_stats.py; `shrink` K mixes them with the projection by sample size); players without a game keep the projection.
+    What was used is kept in pool.attrs['season_info'] / ['season_note']."""
     meta = json.loads((APP_DIR / "league_meta.json").read_text())
     pool = pd.read_csv(APP_DIR / "player_pool.csv").reset_index(drop=True)
     try:
@@ -105,11 +109,29 @@ def load_pool_and_meta(rostered_names=None):
         except Exception as e:                                   # no network and no cached ESPN list: carry on without
             print(f"(ESPN-Projektionen für Rookies/Neuzugänge nicht verfügbar: {type(e).__name__})")
     pool = availability.adjust_pool(pool, inj, ovr)
+    season_info = season_note = None
+    if season:
+        stats, season_note = season_stats.load(refresh=refresh)
+        if stats is not None:
+            pool, season_info = season_stats.apply(pool, stats, min_games=min_games, shrink=shrink)
     pool.attrs["espn_filled"], pool.attrs["espn_missing"] = filled, missing
+    pool.attrs["season_info"], pool.attrs["season_note"] = season_info, season_note
     cal = meta.get("calibration")
     if cal:
         engine.CAL_A, engine.CAL_B = cal["cal_a"], cal["cal_b"]
     return pool, meta
+
+
+def season_text(pool) -> str:
+    """One line saying where the per-game numbers come from (printed by the weekly advisor and the league tools)."""
+    info, note = pool.attrs.get("season_info"), pool.attrs.get("season_note")
+    if info is None:
+        return "Per-Spiel-Werte: Projektion vor der Saison" + (f" ({note})" if note else " (--projection)")
+    mix = "" if (pool["SEASON_SRC"] != "Mischung").all() else " mit der Projektion gemischt (--shrink)"
+    return (f"Per-Spiel-Werte: Schnitte der laufenden Saison bis {info['last_game']} ({info['n_used']} Spieler, im Median {info['median_gp']:.0f} Spiele){mix}; "
+            "ohne Spiel dieser Saison gilt die Projektion." + (f" ({note})" if note else "")
+            + ("\n  Achtung: Nach so wenigen Spielen sind Schnitte sehr verrauscht (ein 30-Punkte-Abend bewegt einen Drei-Spiele-Schnitt um 10). --shrink 10 mischt sie mit der Projektion."
+               if info["median_gp"] < 8 and (pool["SEASON_SRC"] == "Saison").any() else ""))
 
 
 def init_rosters() -> dict:
@@ -301,7 +323,8 @@ def run(args) -> int:
         init_rosters()
     rosters_names = json.loads(ROSTERS_JSON.read_text())
     swaps = parse_swaps(getattr(args, "swap", None))
-    pool, meta = load_pool_and_meta([n for ns in rosters_names.values() for n in ns] + [n for pair in swaps for n in pair])
+    pool, meta = load_pool_and_meta([n for ns in rosters_names.values() for n in ns] + [n for pair in swaps for n in pair],
+                                    season=not args.projection, min_games=args.min_games, shrink=args.shrink, refresh=args.refresh)
     you = args.team or meta["your_team_name"]
 
     # week: dates and opponent
@@ -366,6 +389,7 @@ def run(args) -> int:
     print("Annahme: " + ("jeder Spieler absolviert alle Spiele seines Teams in dieser Woche" if not args.expected_games
                          else "erwartete Spiele = Teamspiele x Verfügbarkeit des Modells")
           + ("; ESPN-OUT-Spieler zählen mit (--ignore-out)" if args.ignore_out else "; ESPN-OUT-Spieler spielen nicht") + ", für beide Teams.")
+    print(season_text(pool))
     dist = {}
     for n_ in tg.values():
         dist[n_] = dist.get(n_, 0) + 1
@@ -374,6 +398,7 @@ def run(args) -> int:
     def row(i):
         e = model.E[i]
         return dict(P=model.names[i], POS=pool["POS_ELIGIBLE_STR"].iat[i], TEAM=pool["CURRENT_TEAM_ABBR"].iat[i], G=int(round(games[i])),
+                    SG=int(pool["SEASON_GP"].iat[i]) if "SEASON_GP" in pool else 0,
                     EXP=model.avail[i] * games[i], PTS=e[engine.CATS.index("PTS")], REB=e[engine.CATS.index("REB")],
                     AST=e[engine.CATS.index("AST")], STL=e[engine.CATS.index("STL")], BLK=e[engine.CATS.index("BLK")],
                     TPM=e[engine.CATS.index("FG3M")], DD=e[engine.CATS.index("DD")], ST=pool["INJURY_STATUS"].iat[i] or "")
@@ -382,8 +407,8 @@ def run(args) -> int:
     for i in sorted(my_roster, key=lambda i: (i not in lineup, -model.E[i].sum())):
         r = row(i); r["START"] = "START " + slot_of.get(i, "") if i in lineup else "Bank"
         rows.append(r)
-    t = pd.DataFrame(rows)[["START", "P", "POS", "TEAM", "G", "EXP", "PTS", "REB", "AST", "STL", "BLK", "TPM", "DD", "ST"]]
-    t = t.rename(columns={"P": "Spieler", "G": "Spiele (Team)", "EXP": "erw. Spiele", "TPM": "3PM", "ST": "ESPN"})
+    t = pd.DataFrame(rows)[["START", "P", "POS", "TEAM", "G", "EXP", "SG", "PTS", "REB", "AST", "STL", "BLK", "TPM", "DD", "ST"]]
+    t = t.rename(columns={"P": "Spieler", "G": "Spiele (Team)", "EXP": "erw. Spiele", "SG": "Sp. Saison", "TPM": "3PM", "ST": "ESPN"})
     pd.set_option("display.width", 200)
     print("\nDein Kader und die empfohlene Aufstellung (erwartete Wochensummen):")
     print(t.round(1).to_string(index=False))
@@ -433,9 +458,13 @@ def main() -> int:
     ap.add_argument("--expected-games", action="store_true",
                     help="statt „alle Spiele des Teams“ mit den erwarteten Spielen rechnen (Teamspiele x Saison-Verfügbarkeit des Modells)")
     ap.add_argument("--ignore-out", action="store_true", help="auch Spieler, die bei ESPN auf OUT stehen, spielen alle Spiele")
+    ap.add_argument("--projection", action="store_true", help="Per-Spiel-Werte aus der Projektion vor der Saison statt aus den Schnitten der laufenden Saison")
+    ap.add_argument("--min-games", type=int, default=1, help="Schnitte der Saison erst ab so vielen Spielen verwenden (Standard 1); weniger Spiele: Projektion")
+    ap.add_argument("--shrink", type=float, default=0.0,
+                    help="Schnitt und Projektion nach Stichprobe mischen, Gewicht des Schnitts = Spiele/(Spiele+K); 0 = reiner Saison-Schnitt (Standard), 10 = vorsichtig")
     ap.add_argument("--team", help="dein Team (Standard: aus league_meta.json)")
     ap.add_argument("--rosters", help="Pfad zu einer anderen Roster-Datei")
-    ap.add_argument("--refresh", action="store_true", help="NBA-Spielplan neu laden")
+    ap.add_argument("--refresh", action="store_true", help="NBA-Spielplan und Saison-Schnitte neu laden")
     ap.add_argument("--init-rosters", action="store_true", help="league_rosters.json aus dem Draft-Log erzeugen und beenden")
     args = ap.parse_args()
     if args.rosters:
