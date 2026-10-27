@@ -156,6 +156,17 @@ def line(pr: dict, cal: dict) -> dict:
     return out
 
 
+def espn_by_key(espn: list) -> dict:
+    """name key -> ESPN player (the one with the higher auction value if a key occurs twice)."""
+    by_key: dict = {}
+    for p in espn:
+        k = names.name_key(p.get("fullName", ""))
+        cur = by_key.get(k)
+        if cur is None or ((p.get("ownership") or {}).get("auctionValueAverage") or 0) > ((cur.get("ownership") or {}).get("auctionValueAverage") or 0):
+            by_key[k] = p
+    return by_key
+
+
 # ── the extension ────────────────────────────────────────────────────────────────────────────────────
 def extend_pool(pool: pd.DataFrame, wanted: list, espn: list | None = None):
     """Pool with an ESPN-projection row for every wanted name that is missing or only a proxy placeholder.
@@ -172,12 +183,7 @@ def extend_pool(pool: pd.DataFrame, wanted: list, espn: list | None = None):
     if not todo:
         return pool, {}, [], []
     espn = espn if espn is not None else load_espn()
-    by_key: dict = {}
-    for p in espn:
-        k = names.name_key(p.get("fullName", ""))
-        cur = by_key.get(k)
-        if cur is None or ((p.get("ownership") or {}).get("auctionValueAverage") or 0) > ((cur.get("ownership") or {}).get("auctionValueAverage") or 0):
-            by_key[k] = p
+    by_key = espn_by_key(espn)
     cal = calibrate(pool, by_key)
     pool = pool.copy()
     new_rows, filled, missing, injuries = [], [], [], {}
@@ -217,3 +223,51 @@ def extend_pool(pool: pd.DataFrame, wanted: list, espn: list | None = None):
     if new_rows:
         pool = pd.concat([pool, pd.DataFrame(new_rows)], ignore_index=True)
     return pool, injuries, filled, missing
+
+
+FA_ROW_TYPE = "Waiver (Saisonwerte)"
+
+
+def extend_free_agents(pool: pd.DataFrame, stats: pd.DataFrame, exclude_keys: set, espn: list | None = None,
+                       min_games: int = 2, min_mpg: float = 14.0, top_n: int = 60):
+    """Waiver candidates the model pool does not know: players with real games this season (stats = season_stats.aggregate) who
+    are neither in the pool nor on a league roster (`exclude_keys` = name keys of all rostered players). They get a row built from
+    this season's averages (spreads and double-double rate calibrated like the ESPN stand-in lines), ESPN's positions, team and
+    injury status. Only the `top_n` by a simple production score are added; players ESPN does not list are skipped (no positions).
+    Returns (pool, injuries, [names added])."""
+    have = {names.name_key(n) for n in pool["PLAYER_NAME"]}
+    cand = stats[(stats["GP"] >= min_games) & (stats["MIN"] >= min_mpg)].copy()
+    cand["KEY"] = cand["PLAYER_NAME"].map(names.name_key)
+    cand = cand[~cand["KEY"].isin(have | set(exclude_keys))]
+    if cand.empty:
+        return pool, {}, []
+    cand["SCORE"] = cand.PTS + 1.2 * cand.REB + 1.5 * cand.AST + 3 * (cand.STL + cand.BLK) + cand.FG3M
+    cand = cand.sort_values("SCORE", ascending=False).head(top_n)
+    espn = espn if espn is not None else load_espn()
+    by_key = espn_by_key(espn)
+    cal = calibrate(pool, by_key)
+    used = {int(i) for i in pool["PLAYER_ID"]}
+    rows, injuries, added = [], {}, []
+    for r in cand.itertuples():
+        p = by_key.get(r.KEY)
+        if p is None:
+            continue
+        pr = {k: float(getattr(r, k)) for k in ("MIN", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "FGM", "FGA", "FTM", "FTA")}
+        proj = projection(p)
+        avail = float(np.clip(cal["avail_k"] * proj["GP"] / MAX_GAMES, 0.15, 0.9)) if proj else 0.55
+        pid = int(p["id"])
+        while pid in used:
+            pid += 10_000_000
+        used.add(pid)
+        team = getattr(r, "TEAM", "") or ESPN_TEAM.get(p.get("proTeamId"))
+        rows.append({"PLAYER_ID": pid, "PLAYER_NAME": p["fullName"], **line(pr, cal), "POS_ELIGIBLE_STR": positions(p),
+                     "CURRENT_TEAM_ABBR": team, "AVAIL": avail, "AVAILABILITY": avail, "EXP_GP": round(avail * MAX_GAMES), "ROW_TYPE": FA_ROW_TYPE,
+                     "MODEL_OK": True, "ESPN_$_LIST": float(round((p.get("ownership") or {}).get("auctionValueAverage") or 0.0)),
+                     "ESPN_INJURY": p.get("injuryStatus"), "IS_ROOKIE": False})
+        added.append(p["fullName"])
+        status = p.get("injuryStatus")
+        if status not in (None, "ACTIVE") or p.get("injured"):
+            injuries[str(pid)] = {"status": status or "UNKNOWN", "injured": bool(p.get("injured")), "outlook": (p.get("seasonOutlook") or "")[:600]}
+    if rows:
+        pool = pd.concat([pool, pd.DataFrame(rows)], ignore_index=True)
+    return pool, injuries, added

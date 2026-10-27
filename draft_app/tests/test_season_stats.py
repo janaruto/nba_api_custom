@@ -112,3 +112,56 @@ def test_no_cache_and_no_network_means_no_season_stats(cache, monkeypatch):
     monkeypatch.setattr(ss, "fetch_gamelog", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
     stats, note = ss.load()
     assert stats is None and "nicht verfügbar" in note
+
+
+# ── a game cut short by an injury is not part of the average ─────────────────────────────────────────
+def team_logs(rows):
+    """rows: (pid, name, team, date, minutes, pts). Everything else is 0, plus a bench filler so every team game exists in the data."""
+    out = []
+    for pid, nm, team, date, mn, pts in rows:
+        out.append(dict(PLAYER_ID=pid, PLAYER_NAME=nm, TEAM_ABBREVIATION=team, GAME_DATE=date, MIN=mn, PTS=pts, REB=0, AST=0, STL=0, BLK=0,
+                        FG3M=0, FGM=0, FGA=0, FTM=0, FTA=0))
+    return pd.DataFrame(out)
+
+
+def test_the_game_he_got_hurt_in_is_left_out():
+    # Duren: 28 minutes, then 10 minutes (hurt), then his team plays without him. Filler plays all three games.
+    d = team_logs([(1, "Duren", "DET", "2026-10-20", 28, 22), (1, "Duren", "DET", "2026-10-23", 10, 4),
+                   (9, "Filler", "DET", "2026-10-20", 20, 5), (9, "Filler", "DET", "2026-10-23", 20, 5), (9, "Filler", "DET", "2026-10-25", 20, 5)])
+    a = ss.aggregate(d).set_index("PLAYER_ID")
+    assert a.loc[1, "GP"] == 1 and a.loc[1, "PTS"] == 22 and a.loc[1, "MIN"] == 28 and a.loc[1, "EXCLUDED"] == 1
+    assert a.loc[9, "GP"] == 3 and a.loc[9, "EXCLUDED"] == 0
+
+
+def test_a_blowout_game_is_not_an_injury_because_he_plays_the_next_game():
+    d = team_logs([(1, "Star", "BOS", "2026-10-20", 34, 30), (1, "Star", "BOS", "2026-10-23", 12, 6), (1, "Star", "BOS", "2026-10-25", 33, 28)])
+    a = ss.aggregate(d).set_index("PLAYER_ID")
+    assert a.loc[1, "GP"] == 3 and a.loc[1, "EXCLUDED"] == 0 and a.loc[1, "PTS"] == pytest.approx((30 + 6 + 28) / 3)
+
+
+def test_the_latest_team_game_cannot_be_judged_yet_and_fringe_players_are_never_excluded():
+    d = team_logs([(1, "Star", "BOS", "2026-10-20", 34, 30), (1, "Star", "BOS", "2026-10-23", 8, 2),            # short, but no later team game in the data
+                   (2, "Fringe", "NYK", "2026-10-20", 9, 2), (2, "Fringe", "NYK", "2026-10-23", 3, 0),         # rotation median 9 < 15 minutes
+                   (8, "Filler", "NYK", "2026-10-20", 20, 5), (8, "Filler", "NYK", "2026-10-23", 20, 5), (8, "Filler", "NYK", "2026-10-25", 20, 5)])
+    a = ss.aggregate(d).set_index("PLAYER_ID")
+    assert a.loc[1, "GP"] == 2 and a.loc[1, "EXCLUDED"] == 0
+    assert a.loc[2, "GP"] == 2 and a.loc[2, "EXCLUDED"] == 0
+
+
+def test_a_player_whose_only_game_was_cut_short_has_no_games_and_keeps_his_projection():
+    d = team_logs([(1, "Hurt", "DAL", "2026-10-20", 6, 2), (9, "Filler", "DAL", "2026-10-20", 20, 5), (9, "Filler", "DAL", "2026-10-22", 20, 5)])
+    a = ss.aggregate(d).set_index("PLAYER_ID")
+    assert a.loc[1, "GP"] == 0 and a.loc[1, "EXCLUDED"] == 1 and a.loc[9, "GP"] == 2
+    pool = pool_with()
+    pool.loc[0, ["PLAYER_ID", "PLAYER_NAME"]] = [1, "Hurt"]
+    p, info = ss.apply(pool, a.reset_index())
+    assert p.SEASON_SRC[0] == "Projektion" and p.M_PTS[0] == 18.0 and p.SEASON_GP[0] == 0       # not "5 points in 6 minutes"
+    assert info["n_injury_games"] == 1
+
+
+def test_an_old_cache_without_the_exclusion_column_is_refetched(cache, monkeypatch):
+    cache.parent.mkdir()
+    old = ss.aggregate(logs()).drop(columns=["EXCLUDED"]); old.to_csv(cache, index=False)
+    monkeypatch.setattr(ss, "fetch_gamelog", lambda *a, **k: logs())
+    stats, note = ss.load()
+    assert "EXCLUDED" in stats and note is None

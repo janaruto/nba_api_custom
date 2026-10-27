@@ -274,3 +274,44 @@ def test_login_with_rejected_values_stores_nothing(no_files, monkeypatch):
     with pytest.raises(SystemExit) as e:
         lt.cmd_login()
     assert "Nicht gespeichert" in str(e.value) and not (no_files / "espn_auth.json").exists()
+
+
+# ── waiver: a small synthetic league ─────────────────────────────────────────────────────────────────
+@pytest.fixture
+def small_league(tmp_path, monkeypatch):
+    from test_engine import synthetic_pool
+    import numpy as np
+    pool = synthetic_pool(n=60)
+    pool["MODEL_OK"], pool["INJURY_STATUS"], pool["ESPN_$_LIST"], pool["CURRENT_TEAM_ABBR"], pool["EXP_GP"] = True, "", 0.0, "BOS", 55.0
+    pool.loc[0, "PLAYER_NAME"] = "Free Star"                       # the best player of the pool, on no roster
+    meta = {"your_team_name": "A", "league_rates": {"FG_PCT": 0.47, "FT_PCT": 0.78, "PTS_MIN": 0.49}, "regular_season_matchups": 18, "playoff_teams": 2}
+    monkeypatch.setattr(lt.wl, "load_pool_and_meta", lambda *a, **k: (pool, meta))
+    others = [i for i in range(1, 53)]
+    rosters = {t: [pool.PLAYER_NAME[i] for i in others[k * 13:(k + 1) * 13]] for k, t in enumerate("ABCD")}
+    monkeypatch.setattr(lt, "ROSTERS_JSON", tmp_path / "rosters.json")
+    lt.ROSTERS_JSON.write_text(json.dumps(rosters))
+    monkeypatch.setattr(lt, "APP_DIR", tmp_path)
+    return lt.League(free_agents=True), pool
+
+
+def test_waiver_picks_the_best_free_players_with_distinct_drops_and_a_real_gain(small_league):
+    L, pool = small_league
+    picked, n = L.waiver(top=3)
+    assert n == 60 - 52 and 0 < len(picked) <= 3                                    # 8 free players were checked
+    adds = [c for c, _, _ in picked]; drops = [d for _, d, _ in picked]
+    assert len(set(adds)) == len(adds) and len(set(drops)) == len(drops)            # every drop and every add only once: all can be carried out
+    assert all(d in L.rosters[L.you] and c not in L.rosters[L.you] for c, d, _ in picked)
+    assert all(r["d_me"] > 0 for _, _, r in picked) and [r["d_me"] for *_, r in picked] == sorted([r["d_me"] for *_, r in picked], reverse=True)
+    assert L.model.names[adds[0]] == "Free Star"                                    # the obvious pickup comes first
+
+
+def test_waiver_respects_keep_and_the_centre_cap(small_league):
+    L, pool = small_league
+    best_drop = L.waiver(top=1)[0][0][1]
+    picked, _ = L.waiver(top=3, keep={best_drop})
+    assert all(d != best_drop for _, d, _ in picked)
+    m = L.model
+    roster = L.rosters[L.you]
+    cen = int(m.isC[roster].sum())
+    for c, d, r in picked:                                                          # never more than 4 centres on the roster after the move
+        assert cen - int(m.isC[d]) + int(m.isC[c]) <= L.rules.max_centers

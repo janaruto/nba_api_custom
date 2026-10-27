@@ -57,7 +57,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 90 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 99 Tests, ohne Netzwerk
 ./draft_app/league.sh login                             # ESPN-Zugang für den automatischen Kader-Abruf (Abschnitt 10.4)
 ```
 
@@ -105,6 +105,7 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 | `./draft_app/league.sh refresh [--file Datei] [--brief]` | Kader aller Teams aktualisieren und Trades/Adds/Drops seit dem letzten Lauf zeigen; `--file` liest nur diese gespeicherte Datei |
 | `./draft_app/league.sh rank` | Rangliste mit Siegchance pro Woche, erwarteten Siegen, Top-4- und Platz-1-Chance, gefährlichsten Gegnern |
 | `./draft_app/league.sh suggest` | Trade-Ideen für dich (Ein-gegen-Eins mit allen Teams): Win-Win und für den Manager faire |
+| `./draft_app/league.sh waiver [--top 3] [--keep "A;B"]` | **Waiver:** die drei besten freien Spieler (ohne Team in der Liga), jeweils mit dem Spieler aus deinem Kader, den du dafür droppen solltest; Siegchance vorher/nachher, Kategorien, ob der Neue startet; `--keep` schützt eigene Spieler vor dem Drop |
 | `./draft_app/league.sh all` | Kader aktualisieren, Rangliste und Trade-Ideen in einem Lauf |
 | `./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray[;Zweiter]"` | jemand fragt nach deinen Spielern: was kannst du zurückverlangen? |
 | `./draft_app/league.sh want "Evan Mobley"` | du willst einen Spieler: drei Optionen (beide profitieren, grösster Gewinn für dich, fair für den Manager) mit Stat-Veränderung und Nachrichtenentwurf |
@@ -116,7 +117,7 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 
 | Befehl | Wirkung |
 |---|---|
-| `.venv/bin/python -m pytest` | alle 90 Tests (kein Netzwerk) |
+| `.venv/bin/python -m pytest` | alle 99 Tests (kein Netzwerk) |
 
 Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ich), vor dem Matchup `./draft_app/weekly.sh` (beste Aufstellung), bei einem Tauschgedanken `--swap`, bei einem Angebot `offer`/`want`.
 
@@ -138,7 +139,7 @@ Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ic
 | `draft_app/season_stats.py` | Per-Spiel-Schnitte der laufenden Saison aus den Spielprotokollen (statt der Projektion); für Wochen-Aufstellung und alle Liga-Werkzeuge |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 90 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien, Saison-Schnitte |
+| `draft_app/tests/` | 99 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien, Saison-Schnitte |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -359,6 +360,10 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
   Ein Trade erscheint nur unter der ersten Option, die ihn aufnimmt, und Trades, die gegenüber einem kleineren nur Stücke ohne jede Wirkung hinzufügen (z. B. ein Bankspieler als Zugabe), werden verworfen. Zu jeder Option stehen die Stat-Zeilen aller Spieler, die Siegchance vorher/nachher für beide Teams und die wichtigsten Kategorie-Veränderungen;
   zur ersten Option kommen ein Nachrichtenentwurf und die Tabelle der erwarteten Wochensummen beider Teams vorher/nachher. Bei grossen Suchen (über 1'200 mögliche Trades, z. B. 3 gegen 3: rund 30'000) wird erst eine grobe Näherung gerechnet (Aufstellungen nicht neu optimiert, Positionen nicht geprüft), und nur die rund 1'200 vielversprechendsten Trades werden genau durchgerechnet (rund 20 Sekunden).
 
+* **`waiver`:** die besten Zugänge von den **freien Spielern** (Pool-Spieler auf keinem Kader, ohne ESPN-OUT, dazu bis zu 60 Spieler mit Spielen in dieser Saison, die weder im Pool noch auf einem Kader stehen; ihre Zeile entsteht aus den Saisonwerten, den Streuungen wie bei den ESPN-Ersatzlinien und ESPNs Positionen).
+  Für jeden Kandidaten und jeden deiner Spieler als Drop wird das neue Team gebildet (höchstens 4 Center im Kader, Aufstellung neu optimiert) und die Siegchance pro Woche verglichen: erst grob für alle Paare, dann genau für die 12 besten Kandidaten je Drop.
+  Gezeigt werden die drei besten Paare, wobei jeder Drop und jeder Zugang nur einmal vorkommt, damit sich alle drei zusammen ausführen lassen (Wechselwirkungen der drei Wechsel sind nicht eingerechnet). Waiver-Gebote (FAAB) und Waiver-Reihenfolge kennt das Werkzeug nicht.
+
 **ESPN-Ersatzlinien für Spieler ohne NBA-Daten** (`espn_extra.py`). Rookies und Neuzugänge fehlen im Pool oder stehen dort nur als Platzhalter. Für sie gilt ESPNs eigene Projektion 2027:
 
 * Mittelwerte pro Spiel direkt aus ESPN (Minuten, PTS, REB, AST, STL, BLK, 3PM, FGM/FGA, FTM/FTA).
@@ -378,6 +383,9 @@ und die **Double-Double-Rate** (Anteil der Spiele mit mindestens zwei Kategorien
 
 * **Wer ersetzt wird:** jeder Spieler mit mindestens `--min-games` Spielen (Standard 1); wer noch kein Spiel hat (verletzt, nicht eingesetzt), behält die Projektion. Rookies und Neuzugänge mit ESPN-Linie (6.12) werden über den Namen zugeordnet, nie über eine Kennung (ESPN- und NBA-Kennungen können sich zufällig gleichen); zwei Spieler mit gleichem Namensschlüssel werden nicht geraten.
 * **Was gleich bleibt:** die Streuung pro Spiel (aus wenigen Spielen nicht schätzbar), die Positionen und die Saison-Verfügbarkeit der Liga-Werkzeuge. Die Wochen-Aufstellung rechnet ohnehin mit allen Spielen (6.12).
+* **Verletzungsspiel zählt nicht:** Ein Spiel, in dem ein Spieler sich verletzt hat, wird aus dem Schnitt gelassen. Als Verletzungsspiel gilt ein Spiel mit **deutlich weniger Minuten** (unter 55 % des Medians seiner übrigen Spiele, bei einem einzigen Spiel unter 10 Minuten) bei einem **Rotationsspieler** (Median der übrigen Spiele mindestens 15 Minuten), **nach dem er das nächste Spiel seines Teams verpasst**.
+  Ohne die Regel zog ein 10-Minuten-Spiel nach der Verletzung den Schnitt eines 28-Minuten-Centers (Duren: 28 Minuten, 22 Punkte im ersten Spiel, dann 10 Minuten und 4 Punkte) so weit herunter, dass das Modell ihn zu oft in Trade-Vorschlägen abgab. Mit der Regel steht er bei 22.0 PTS und 9.0 REB (ein Spiel), und er taucht nur noch einmal auf. Ein Blowout löst die Regel nicht aus, weil der Spieler im nächsten Teamspiel wieder auftaucht; Randspieler sind ausgenommen, weil sie oft aus Trainerentscheid fehlen.
+  Aktuell sind es 10 Spiele bei Rotationsspielern. Nicht erkannt wird eine Verletzung im jüngsten Teamspiel (es gibt noch kein „nächstes Spiel“) und eine, bei der der Spieler das Spiel zu Ende gespielt hat. Hat ein Spieler nur solche Spiele, behält er seine Projektion.
 * **Mischung nach Stichprobe (`--shrink K`):** Gewicht des Schnitts = `n / (n + K)` mit `n` Spielen; K = 0 ist der reine Saison-Schnitt (Standard, wie gewünscht), K = 10 traut einem Drei-Spiele-Schnitt nur 23 %. Das ist eine Faustregel der Bayes-Mischung, nicht angepasst.
 * **Anzeige:** Beide Werkzeuge nennen in einer Zeile, woher die Zahlen kommen („Schnitte der laufenden Saison bis 25.10. (318 Spieler, im Median 3 Spiele)“), die Wochen-Tabelle zeigt die Spiele der Saison je Spieler, und die Stat-Zeilen der Liga-Werkzeuge tragen „Saison-Schnitt aus N Sp.“.
 * **Grenze, wichtig:** Nach drei Spielen sind Schnitte sehr verrauscht. Beispiel Woche 2 (Stand 26. Okt.): Siegchance 66 % mit reinen Saison-Schnitten, 30 % mit `--shrink 10`, 23 % mit der Projektion; in der Rangliste fällt Brick City von Platz 5 (Projektion) auf Platz 14 (reine Schnitte).
@@ -518,6 +526,8 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E27 | 19. Okt. | `weekly.sh`: Woche automatisch wählen; `--swap` rechnet die Siegchance für „B statt A“ neu und nennt immer die beste Aufstellung dazu (Vorgabe „startet“/„sitzt“ in der erschöpfenden Suche) | Vor jedem Matchup stellt sich die Frage „was, wenn ich X statt Y bringe?“; mit Vorgabe statt Einzeltausch sieht man auch, was sich im Rest der Aufstellung ändert | Ist B nicht im Kader, gilt es als Trade/Add (A geht, B kommt) |
 | E28 | 19. Okt. | Wochen-Aufstellung und Tausch-Rechnung: jeder Spieler absolviert alle Spiele seines Teams (ESPN-OUT ausgenommen), für beide Teams; `--expected-games` und `--ignore-out` als Schalter | Die Saison-Verfügbarkeit (0.67) beschreibt das Jahr, nicht die einzelne Woche; man setzt die Aufstellung selbst und plant mit den Spielen, die anstehen | Macht die Prozente deutlicher (Woche 1: 31 % statt 55 %); Reihenfolge der Aufstellungen unkritisch |
 | E29 | 26. Okt. | Per-Spiel-Werte aus den Schnitten der laufenden Saison (reiner Schnitt als Standard) für die Wochen-Aufstellung **und alle Liga-Werkzeuge**; Projektion nur für Spieler ohne Spiel; `--shrink`, `--min-games`, `--projection` als Schalter | Nach Saisonstart zählt, was die Spieler tun; der Wunsch war ausdrücklich der aktuelle Schnitt, auch für die ganze Liga | Nach 3 Spielen sehr verrauscht (6.13): Siegchance Woche 2 zwischen 23 % und 66 %, je nach Schalter; `--shrink 10` ist vorsichtiger |
+| E30 | 27. Okt. | Verletzungsspiele (deutlich weniger Minuten, danach das nächste Teamspiel verpasst, nur Rotationsspieler) zählen nicht zum Saison-Schnitt | Das Spiel mit der Verletzung zog den Schnitt von Duren herunter (4 Punkte in 10 Minuten statt 22 in 28), das Modell gab ihn zu oft in Trade-Vorschlägen ab | Heuristik: erkennt keine Verletzung im jüngsten Teamspiel und keine zu Ende gespielte (6.13) |
+| E31 | 27. Okt. | Neuer Befehl `waiver`: drei beste freie Spieler mit je einem Drop, jeder Drop und Zugang nur einmal; Kandidaten auch aus den Saisonwerten ausserhalb des Pools | Neue Namen mit guten Saisonwerten sind typische Waiver-Funde und stehen nicht im Vorsaison-Pool; ohne verschiedene Drops liessen sich die Vorschläge nicht zusammen ausführen | FAAB-Gebote und Waiver-Reihenfolge unbekannt; bei wenigen Spielen verrauscht |
 
 ---
 
@@ -593,7 +603,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 90 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 99 Tests):
 
 | Datei | Prüft |
 |---|---|
@@ -603,8 +613,9 @@ Cookie-Dateien hält es nie für Liga-Daten.
 | `test_availability.py` | Verletzungs-Overlay und Überschreibungen |
 | `test_bridge.py` | Namens- und Team-Zuordnung, Ereignisverarbeitung, Token, Doppelverkäufe |
 | `test_weekly.py` | Spielplan, Spielzahlen je Team, beste legale Aufstellung (auch mit Vorgaben „spielt“/„sitzt“), Wahl der Matchup-Woche, Was-wäre-wenn-Tausch, Team-Aliase |
-| `test_league_tools.py` | ESPN-JSON lesen, Trades/Neuverpflichtungen/Entlassungen, falsch benannte Dateien, Cookie-Dateien werden nie als Liga-Daten genommen; `want`: Grössenangaben, Kandidaten, die drei Optionen, Wegfall wirkungsloser Zugaben |
-| `test_espn_extra.py` | ESPN-Ersatzlinien: fehlende Spieler, Platzhalter, fehlende Projektion, kein Netzwerk wenn nichts zu tun ist, DD-Reihenfolge, ID-Kollisionen |
+| `test_league_tools.py` | ESPN-JSON lesen, Trades/Neuverpflichtungen/Entlassungen, falsch benannte Dateien, Cookie-Dateien werden nie als Liga-Daten genommen; `want`: Grössenangaben, Kandidaten, die drei Optionen, Wegfall wirkungsloser Zugaben; `waiver` mit einer kleinen synthetischen Liga (verschiedene Drops, Center-Grenze, `--keep`) |
+| `test_espn_extra.py` | ESPN-Ersatzlinien: fehlende Spieler, Platzhalter, fehlende Projektion, kein Netzwerk wenn nichts zu tun ist, DD-Reihenfolge, ID-Kollisionen; Waiver-Kandidaten aus den Saisonwerten |
+| `test_season_stats.py` | Saison-Schnitte: Aggregation, Double-Double-Rate, Ersetzen der Projektion, `--min-games`/`--shrink`, Zuordnung ohne ID-Verwechslung, Zwischenspeicher, Verletzungsspiele (auch Blowout, Randspieler, jüngstes Teamspiel) |
 
 Die Oberfläche der App ist nur manuell im Browser getestet (und über `streamlit.testing`-Läufe in der Entwicklung), nicht automatisiert.
 

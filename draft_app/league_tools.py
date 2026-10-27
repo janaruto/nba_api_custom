@@ -9,6 +9,7 @@ League tools: current rosters, rankings, trade ideas, offers and wish players
     python draft_app/league_tools.py want "Alperen Sengun"                    # you want a player: what to offer, how the stats change, a message for the manager
     python draft_app/league_tools.py want "Alperen Sengun" --give 2 --get 2   # ... as a 2-for-2 (the wish player + one more of his team); also 1-3 ranges,
                                                                               #     --keep "A;B" (never offer them), --skip "C" (do not ask for them), --top N
+    python draft_app/league_tools.py waiver [--top 3] [--keep "A;B"]         # the best free players to pick up, and whom to drop for each
     python draft_app/league_tools.py all                                      # refresh + rank + suggest
 
 Where the rosters come from (`refresh`, and automatically before rank / suggest / offer / want / all and the weekly lineup), in this order:
@@ -293,12 +294,12 @@ def refresh(args=None, brief: bool = False) -> dict:
 
 # ── the league model ─────────────────────────────────────────────────────────────────────────────────
 class League:
-    def __init__(self, season=True, min_games=1, shrink=0.0, refresh=False):
+    def __init__(self, season=True, min_games=1, shrink=0.0, refresh=False, free_agents=False):
         if not ROSTERS_JSON.exists():
             wl.init_rosters()
         raw = json.loads(ROSTERS_JSON.read_text())
         # rookies/new signings: ESPN's projection; every player with games this season: this season's per-game averages
-        self.pool, self.meta = wl.load_pool_and_meta([n for ns in raw.values() for n in ns], season=season, min_games=min_games, shrink=shrink, refresh=refresh)
+        self.pool, self.meta = wl.load_pool_and_meta([n for ns in raw.values() for n in ns], season=season, min_games=min_games, shrink=shrink, refresh=refresh, free_agents=free_agents)
         self.espn_filled, self.espn_missing = self.pool.attrs.get("espn_filled", []), self.pool.attrs.get("espn_missing", [])
         self.rules = engine.Rules.from_meta(self.meta)
         self.model = engine.build_pool_model(self.pool, self.rules, self.meta["league_rates"])
@@ -442,6 +443,48 @@ class League:
         mm = self.model.team_moments(self.quick_lineup(me, give, get))
         mp = self.model.team_moments(self.quick_lineup(partner, get, give))
         return (self.win_pct(me, mm, {partner: mp}) - self.base[me], self.win_pct(partner, mp, {me: mm}) - self.base[partner])
+
+    # -- waiver: add a free player, drop one of mine
+    def add_drop(self, me, add, drop):
+        r = [p for p in self.rosters[me] if p != drop] + [add]
+        lu = self.opt_lineup(r, [p for p in self.lineups[me] if p != drop])
+        mm = self.model.team_moments(lu)
+        return dict(d_me=self.win_pct(me, mm) - self.base[me], cat_me=self.cat_probs(me, mm) - self.base_cat[me], lineup=lu, mom=mm, roster=r)
+
+    def free_players(self):
+        """Pool rows on no roster that could be picked up now: modelled, not listed OUT by ESPN."""
+        taken = {p for r in self.rosters.values() for p in r}
+        out = (self.pool["INJURY_STATUS"].fillna("") == "OUT").to_numpy()
+        return [i for i in range(self.model.n) if i not in taken and bool(self.pool.MODEL_OK.iat[i]) and not out[i]]
+
+    def waiver(self, top=3, keep=(), per_drop=12):
+        """Best pickups from the free players, each with the one of my players to drop. Every drop is used at most once, so the
+        suggestions can all be carried out. Returns [(add, drop, result)] best first, plus how many candidates were checked."""
+        me, m = self.you, self.model
+        roster = self.rosters[me]
+        drops = [d for d in roster if d not in set(keep)]
+        cands = self.free_players()
+        ncen = int(m.isC[roster].sum())
+        scored = {d: [] for d in drops}
+        for c in cands:
+            for d in drops:
+                if ncen - int(m.isC[d]) + int(m.isC[c]) > self.rules.max_centers:          # the roster holds at most 4 centres
+                    continue
+                mm = m.team_moments(self.quick_lineup(me, [d], [c]))
+                scored[d].append((self.win_pct(me, mm) - self.base[me], c))
+        results = []
+        for d in drops:
+            for _, c in sorted(scored[d], reverse=True)[:per_drop]:
+                results.append((c, d, self.add_drop(me, c, d)))
+        results.sort(key=lambda x: -x[2]["d_me"])
+        picked, used_add, used_drop = [], set(), set()
+        for c, d, r in results:
+            if r["d_me"] <= 0.0005 or c in used_add or d in used_drop:
+                continue
+            picked.append((c, d, r)); used_add.add(c); used_drop.add(d)
+            if len(picked) >= top:
+                break
+        return picked, len(cands)
 
     # -- standings
     def standings(self, sims=3000, seed=7):
@@ -727,6 +770,29 @@ def cmd_want(L: League, args):
     print(f"  Siegchance/Woche: du {100 * L.base[me]:.1f}% -> {100 * (L.base[me] + r['d_me']):.1f}%   ·   {x} {100 * L.base[x]:.1f}% -> {100 * (L.base[x] + r['d_x']):.1f}%")
 
 
+def cmd_waiver(L: League, args):
+    me = L.you
+    keep = {L.find_player(p.strip()) for p in (args.keep or "").split(";") if p.strip()}
+    if not keep <= set(L.rosters[me]):
+        raise SystemExit("--keep: nur Spieler aus deinem Kader.")
+    picked, n = L.waiver(top=args.top, keep=keep)
+    fa = L.pool.attrs.get("fa_added", [])
+    print(f"\n== Waiver: die {args.top} besten Zugänge von den freien Spielern ==")
+    print(f"Geprüft: {n} freie Spieler (ohne ESPN-OUT)" + (f", davon {len(fa)} nur aus den Saisonwerten (nicht im Modell-Pool)" if fa else "")
+          + " gegen jeden deiner Spieler als Drop" + (f" (geschützt: {', '.join(L.model.names[i] for i in keep)})" if keep else "")
+          + f". Siegchance pro Woche jetzt: {100 * L.base[me]:.1f}%.")
+    if not picked:
+        print("\nKein freier Spieler verbessert dein Team laut Modell. (Bei wenigen Saisonspielen ist das Bild noch unscharf: --shrink 10 probieren.)")
+        return
+    for k, (c, d, r) in enumerate(picked, 1):
+        starts = c in r["lineup"]
+        print(f"\n  [{k}] HOLEN:   {stat_line(L, c)}")
+        print(f"      DROPPEN: {stat_line(L, d)}")
+        print(f"      Deine Siegchance pro Woche {100 * L.base[me]:.1f}% -> {100 * (L.base[me] + r['d_me']):.1f}% ({100 * r['d_me']:+.1f} Pp) · Kategorien in Pp: {cat_delta_text(r['cat_me'], 4)}")
+        print(f"      {L.model.names[c]} " + ("würde in deiner Aufstellung starten" if starts else "säße zunächst auf der Bank") + f" · {L.model.names[d]} " + ("war Starter" if d in L.lineups[me] else "war Bankspieler") + ".")
+    print("\nDie Vorschläge nutzen verschiedene Drops und lassen sich zusammen ausführen (Wechselwirkungen sind nicht eingerechnet). Waiver-Gebote (FAAB) und die Reihenfolge der Waiver-Priorität kennt das Werkzeug nicht.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -738,6 +804,9 @@ def main() -> int:
     r.add_argument("--brief", action="store_true", help="knappe Ausgabe: eine Zeile, dazu Veränderungen und Warnungen")
     sub.add_parser("login", help="einmalig: ESPN-Zugang für den automatischen Kader-Abruf einrichten")
     sub.add_parser("rank", parents=[common]); sub.add_parser("suggest", parents=[common]); sub.add_parser("all", parents=[common])
+    wv = sub.add_parser("waiver", parents=[common], help="die besten freien Spieler (Waiver) und wen du dafür droppen solltest")
+    wv.add_argument("--top", type=int, default=3, help="Anzahl der Vorschläge (Standard 3)")
+    wv.add_argument("--keep", help="eigene Spieler, die nie gedroppt werden, mit ; getrennt")
     o = sub.add_parser("offer", parents=[common]); o.add_argument("--team", required=True); o.add_argument("--asks", required=True, help='deine Spieler, nach denen gefragt wird, mit ; getrennt')
     w = sub.add_parser("want", parents=[common]); w.add_argument("player", help='Wunschspieler, mehrere vom selben Team mit ; getrennt')
     w.add_argument("--give", help="wie viele deiner Spieler im Trade (Zahl oder Bereich, 1-3; Standard 1-2)")
@@ -750,12 +819,12 @@ def main() -> int:
         cmd_login(args); return 0
     if args.cmd == "refresh":
         refresh(args); return 0
-    if args.cmd in ("all", "rank", "suggest", "offer", "want"):          # every analysis starts from the current rosters
+    if args.cmd in ("all", "rank", "suggest", "offer", "want", "waiver"):          # every analysis starts from the current rosters
         try:
             refresh(args, brief=args.cmd != "all")
         except SystemExit as e:
             print(f"(Kader nicht aktualisiert: {e}) rechne mit dem letzten Stand in league_rosters.json")
-    L = League(season=not args.projection, min_games=args.min_games, shrink=args.shrink)
+    L = League(season=not args.projection, min_games=args.min_games, shrink=args.shrink, free_agents=args.cmd == "waiver")
     print(wl.season_text(L.pool))
     if args.cmd in ("rank", "all"):
         cmd_rank(L)
@@ -765,6 +834,8 @@ def main() -> int:
         cmd_offer(L, args)
     if args.cmd == "want":
         cmd_want(L, args)
+    if args.cmd == "waiver":
+        cmd_waiver(L, args)
     return 0
 
 

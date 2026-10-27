@@ -103,3 +103,28 @@ def test_positions_and_team_mapping():
     assert ex.positions({"eligibleSlots": [4, 9, 10, 11]}) == "C"
     assert ex.positions({"eligibleSlots": [], "defaultPositionId": 5}) == "C"
     assert ex.ESPN_TEAM[17] == "BKN" and len(set(ex.ESPN_TEAM.values())) == 30
+
+
+# ── waiver candidates the pool does not know ─────────────────────────────────────────────────────────
+def season_row(name, gp=3, mn=22.0, pts=12.0, team="UTA"):
+    return dict(PLAYER_ID=555, PLAYER_NAME=name, GP=gp, MIN=mn, PTS=pts, REB=5.0, AST=2.0, STL=1.0, BLK=0.5, FG3M=1.0, FGM=4.5, FGA=9.0, FTM=2.0, FTA=2.5,
+                DD=0.0, TEAM=team, LAST_GAME="2026-10-25", EXCLUDED=0)
+
+
+def test_free_agents_from_the_season_stats_get_a_row_and_unlisted_or_known_players_do_not():
+    pool = make_pool()
+    espn = espn_list(pool) + [espn_player(4_800_001, "Call Up", team=26), espn_player(4_800_002, "Rostered Guy")]
+    stats = pd.DataFrame([season_row("Call Up"), season_row("Rostered Guy"), season_row("Player 3"), season_row("Not In ESPN"),
+                          season_row("Too Few Games", gp=1), season_row("Fringe", mn=8.0)])
+    new, inj, added = ex.extend_free_agents(pool, stats, exclude_keys={"rosteredguy"}, espn=espn + [espn_player(7, "Too Few Games"), espn_player(8, "Fringe")])
+    assert added == ["Call Up"] and len(new) == len(pool) + 1                                      # in pool / rostered / unknown to ESPN / <2 games / <14 mpg: none
+    r = new[new.PLAYER_NAME == "Call Up"].iloc[0]
+    assert r.ROW_TYPE == ex.FA_ROW_TYPE and r.MODEL_OK and r.CURRENT_TEAM_ABBR == "UTA" and r.M_PTS == 12.0 and r.M_MIN == 22.0
+    assert r.POS_ELIGIBLE_STR == "SFPF" and new.PLAYER_ID.is_unique and all(r[c] > 0 for c in ["S_PTS", "S_REB", "SI_FG"])
+
+
+def test_nothing_to_add_returns_the_pool_untouched():
+    pool = make_pool()
+    stats = pd.DataFrame([season_row("Player 3")])
+    new, inj, added = ex.extend_free_agents(pool, stats, set(), espn=espn_list(pool))
+    assert new is pool and added == [] and inj == {}

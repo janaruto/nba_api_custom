@@ -84,13 +84,14 @@ def next_monday(today: dt.date) -> dt.date:
 
 
 # ── data ─────────────────────────────────────────────────────────────────────────────────────────────
-def load_pool_and_meta(rostered_names=None, season=True, min_games=1, shrink=0.0, refresh=False):
+def load_pool_and_meta(rostered_names=None, season=True, min_games=1, shrink=0.0, refresh=False, free_agents=False):
     """Pool (injury-adjusted) and league meta. With `rostered_names`, every rostered player the model has no real line for
     (rookies, new signings, draft-night placeholders) gets ESPN's own projection instead - see espn_extra.py. Which players
     that concerned is kept in pool.attrs['espn_filled'] / ['espn_missing'].
     With `season` (default) the per-game means are THIS season's averages so far for every player with at least `min_games` games
     (season_stats.py; `shrink` K mixes them with the projection by sample size); players without a game keep the projection.
-    What was used is kept in pool.attrs['season_info'] / ['season_note']."""
+    What was used is kept in pool.attrs['season_info'] / ['season_note'].
+    `free_agents` also adds waiver candidates the pool does not know (players with games this season who are on no roster)."""
     meta = json.loads((APP_DIR / "league_meta.json").read_text())
     pool = pd.read_csv(APP_DIR / "player_pool.csv").reset_index(drop=True)
     try:
@@ -101,20 +102,25 @@ def load_pool_and_meta(rostered_names=None, season=True, min_games=1, shrink=0.0
         ovr = json.loads((APP_DIR / "availability_overrides.json").read_text())
     except FileNotFoundError:
         ovr = {}
-    filled, missing = [], []
+    filled, missing, fa_added = [], [], []
+    stats, season_note = (season_stats.load(refresh=refresh) if (season or free_agents) else (None, None))
     if rostered_names:
         try:
             pool, extra_inj, filled, missing = espn_extra.extend_pool(pool, list(rostered_names))
             inj = {**inj, **extra_inj}
         except Exception as e:                                   # no network and no cached ESPN list: carry on without
             print(f"(ESPN-Projektionen für Rookies/Neuzugänge nicht verfügbar: {type(e).__name__})")
+    if free_agents and stats is not None and rostered_names:
+        try:
+            pool, fa_inj, fa_added = espn_extra.extend_free_agents(pool, stats, {names.name_key(n) for n in rostered_names})
+            inj = {**inj, **fa_inj}
+        except Exception as e:
+            print(f"(Waiver-Kandidaten aus den Saisonwerten nicht verfügbar: {type(e).__name__})")
     pool = availability.adjust_pool(pool, inj, ovr)
-    season_info = season_note = None
-    if season:
-        stats, season_note = season_stats.load(refresh=refresh)
-        if stats is not None:
-            pool, season_info = season_stats.apply(pool, stats, min_games=min_games, shrink=shrink)
-    pool.attrs["espn_filled"], pool.attrs["espn_missing"] = filled, missing
+    season_info = None
+    if season and stats is not None:
+        pool, season_info = season_stats.apply(pool, stats, min_games=min_games, shrink=shrink)
+    pool.attrs["espn_filled"], pool.attrs["espn_missing"], pool.attrs["fa_added"] = filled, missing, fa_added
     pool.attrs["season_info"], pool.attrs["season_note"] = season_info, season_note
     cal = meta.get("calibration")
     if cal:
@@ -129,7 +135,8 @@ def season_text(pool) -> str:
         return "Per-Spiel-Werte: Projektion vor der Saison" + (f" ({note})" if note else " (--projection)")
     mix = "" if (pool["SEASON_SRC"] != "Mischung").all() else " mit der Projektion gemischt (--shrink)"
     return (f"Per-Spiel-Werte: Schnitte der laufenden Saison bis {info['last_game']} ({info['n_used']} Spieler, im Median {info['median_gp']:.0f} Spiele){mix}; "
-            "ohne Spiel dieser Saison gilt die Projektion." + (f" ({note})" if note else "")
+            "ohne Spiel dieser Saison gilt die Projektion." + (f" Nicht mitgezählt: {info['n_injury_games']} durch Verletzung verkürzte(s) Spiel(e)." if info.get("n_injury_games") else "")
+            + (f" ({note})" if note else "")
             + ("\n  Achtung: Nach so wenigen Spielen sind Schnitte sehr verrauscht (ein 30-Punkte-Abend bewegt einen Drei-Spiele-Schnitt um 10). --shrink 10 mischt sie mit der Projektion."
                if info["median_gp"] < 8 and (pool["SEASON_SRC"] == "Saison").any() else ""))
 
