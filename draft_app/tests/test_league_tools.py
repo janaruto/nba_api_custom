@@ -390,3 +390,45 @@ def test_waiver_rejects_players_that_cannot_be_added_or_dropped(small_league, mo
     with pytest.raises(SystemExit) as e3:
         lt.cmd_waiver(L, wargs(add=L.model.names[L.rosters["A"][0]]))
     assert "gehört schon dir" in str(e3.value)
+
+
+# ── plan: what to do now ─────────────────────────────────────────────────────────────────────────────
+def test_category_values_are_positive_and_largest_near_a_coin_flip(small_league):
+    L, _ = small_league
+    cv = L.category_values()
+    assert len(cv) == 10 and all(g > 0 for _, _, g in cv)                          # a higher weekly mean never lowers the win chance
+    p_gain = sorted((abs(p - 0.5), g) for _, p, g in cv)
+    assert p_gain[0][1] >= p_gain[-1][1]                                           # the category closest to 50 % is worth more than the most one-sided one
+
+
+def test_free_players_with_too_few_season_games_can_be_left_out(small_league):
+    L, pool = small_league
+    n_all = len(L.free_players(1))
+    star = next(i for i, n in enumerate(L.model.names) if n == "Free Star")
+    pool["SEASON_GP"], pool["SEASON_SRC"] = 10, "Saison"
+    pool.loc[star, "SEASON_GP"] = 1                                                # one hot game
+    assert star in L.free_players(1) and star not in L.free_players(3) and len(L.free_players(3)) == n_all - 1
+    pool.loc[star, "SEASON_SRC"] = "Projektion"                                    # an average that is only the projection is not a thin sample
+    assert star in L.free_players(3)
+
+
+def test_droppable_gives_replacements_per_player_and_the_best_swap_first(small_league):
+    L, _ = small_league
+    out = L.droppable(per_drop=3)
+    assert 0 < len(out) <= 13 and all(0 < len(mv) <= 3 for _, mv in out)
+    gains = [mv[0][2]["d_me"] for _, mv in out]
+    assert gains == sorted(gains, reverse=True) and all(d == dd for d, mv in out for _, dd, _ in mv)
+
+
+def test_plan_prints_all_sections_and_respects_the_min_games_filter(small_league, monkeypatch, capsys):
+    L, pool = small_league
+    monkeypatch.setattr(lt, "matchup_view", lambda L_: None)
+    pool["SEASON_GP"], pool["SEASON_SRC"] = 10, "Saison"
+    star = next(i for i, n in enumerate(L.model.names) if n == "Free Star")
+    pool.loc[star, "SEASON_GP"] = 1
+    lt.cmd_plan(L)
+    out = capsys.readouterr().out
+    for head in ("WAS JETZT TUN?", "Kategorien: wo lohnt sich Verstärkung?", "Das bringt am meisten", "Wen loswerden?", "Trade-Ideen für die Fokus-Kategorien"):
+        assert head in out
+    assert "<- Fokus" in out and "Free Star" not in out.split("Wen loswerden?")[0].split("Das bringt am meisten")[1]      # the 1-game wonder is not recommended
+    assert L.fa_min_games == 1                                                      # the filter is only for the duration of the plan
