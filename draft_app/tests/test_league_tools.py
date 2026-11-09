@@ -288,6 +288,9 @@ def small_league(tmp_path, monkeypatch):
     import numpy as np
     pool = synthetic_pool(n=60)
     pool["MODEL_OK"], pool["INJURY_STATUS"], pool["ESPN_$_LIST"], pool["CURRENT_TEAM_ABBR"], pool["EXP_GP"] = True, "", 0.0, "BOS", 55.0
+    for c in ("PTS", "REB", "AST", "STL", "BLK", "FG3M", "DD"):                                   # the columns stat_line prints
+        pool[f"PRED_{c}_PG"] = pool[f"M_{c}"]
+    pool["PRED_FG_PCT"], pool["PRED_FT_PCT"] = pool.M_FGM / pool.M_FGA, pool.M_FTM / pool.M_FTA
     pool.loc[0, "PLAYER_NAME"] = "Free Star"                       # the best player of the pool, on no roster
     meta = {"your_team_name": "A", "league_rates": {"FG_PCT": 0.47, "FT_PCT": 0.78, "PTS_MIN": 0.49}, "regular_season_matchups": 18, "playoff_teams": 2}
     monkeypatch.setattr(lt.wl, "load_pool_and_meta", lambda *a, **k: (pool, meta))
@@ -330,3 +333,60 @@ def test_a_team_is_found_under_any_name_it_ever_had(small_league):
     assert L.find_team("A") == "A" and L.find_team("Old A") == "A" and L.find_team("old a") == "A"      # exact, earlier name, spelling
     with pytest.raises(SystemExit):
         L.find_team("Somebody Else")
+
+
+# ── waiver: name the drop or the add yourself ────────────────────────────────────────────────────────
+def wargs(**kw):
+    base = dict(keep=None, add=None, drop=None, top=3)
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_rank_moves_is_sorted_and_covers_every_possible_drop(small_league):
+    L, pool = small_league
+    star = next(i for i, n in enumerate(L.model.names) if n == "Free Star")
+    moves = L.rank_moves([star], L.rosters[L.you], exact_top=13)
+    gains = [r["d_me"] for *_, r in moves]
+    assert gains == sorted(gains, reverse=True) and {d for _, d, _ in moves} <= set(L.rosters[L.you])
+    assert len(moves) >= 9 and all(c == star for c, _, _ in moves)                    # (a few drops may be blocked by the centre cap)
+
+
+def test_waiver_with_add_ranks_the_drops(small_league, monkeypatch, capsys):
+    L, _ = small_league
+    monkeypatch.setattr(lt, "matchup_view", lambda L_: None)
+    lt.cmd_waiver(L, wargs(add="Free Star"))
+    out = capsys.readouterr().out
+    assert "Wen soll ich für Free Star droppen" in out and out.count("HOLEN:") == 3 and "DROPPEN:" in out
+
+
+def test_waiver_with_drop_ranks_the_replacements(small_league, monkeypatch, capsys):
+    L, _ = small_league
+    monkeypatch.setattr(lt, "matchup_view", lambda L_: None)
+    victim = L.model.names[L.rosters[L.you][-1]]
+    lt.cmd_waiver(L, wargs(drop=victim))
+    out = capsys.readouterr().out
+    assert f"Wer soll für {victim} kommen" in out and out.count(f"DROPPEN:   {victim}") + out.count(f"DROPPEN: {victim}") >= 1
+
+
+def test_waiver_with_both_evaluates_that_move_and_compares_it(small_league, monkeypatch, capsys):
+    L, _ = small_league
+    monkeypatch.setattr(lt, "matchup_view", lambda L_: None)
+    victim = L.model.names[L.rosters[L.you][-1]]
+    lt.cmd_waiver(L, wargs(add="Free Star", drop=victim))
+    out = capsys.readouterr().out
+    assert "Dein Wechsel" in out and "Zum Vergleich" in out and "bester Ersatz für" in out and "bester Drop für Free Star" in out
+
+
+def test_waiver_rejects_players_that_cannot_be_added_or_dropped(small_league, monkeypatch):
+    L, _ = small_league
+    monkeypatch.setattr(lt, "matchup_view", lambda L_: None)
+    other_team_player = L.model.names[L.rosters["B"][0]]
+    with pytest.raises(SystemExit) as e:
+        lt.cmd_waiver(L, wargs(add=other_team_player))
+    assert "gehört B" in str(e.value) and "want" in str(e.value)                       # not free: the way is a trade
+    with pytest.raises(SystemExit) as e2:
+        lt.cmd_waiver(L, wargs(drop=other_team_player))
+    assert "nicht in deinem Kader" in str(e2.value)
+    with pytest.raises(SystemExit) as e3:
+        lt.cmd_waiver(L, wargs(add=L.model.names[L.rosters["A"][0]]))
+    assert "gehört schon dir" in str(e3.value)

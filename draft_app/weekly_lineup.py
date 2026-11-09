@@ -83,14 +83,15 @@ def next_monday(today: dt.date) -> dt.date:
 
 
 # ── data ─────────────────────────────────────────────────────────────────────────────────────────────
-def load_pool_and_meta(rostered_names=None, season=True, min_games=1, shrink=0.0, refresh=False, free_agents=False):
+def load_pool_and_meta(rostered_names=None, season=True, min_games=1, shrink=0.0, refresh=False, free_agents=False, also_names=None):
     """Pool (injury-adjusted) and league meta. With `rostered_names`, every rostered player the model has no real line for
     (rookies, new signings, draft-night placeholders) gets ESPN's own projection instead - see espn_extra.py. Which players
     that concerned is kept in pool.attrs['espn_filled'] / ['espn_missing'].
     With `season` (default) the per-game means are THIS season's averages so far for every player with at least `min_games` games
     (season_stats.py; `shrink` K mixes them with the projection by sample size); players without a game keep the projection.
     What was used is kept in pool.attrs['season_info'] / ['season_note'].
-    `free_agents` also adds waiver candidates the pool does not know (players with games this season who are on no roster)."""
+    `free_agents` also adds waiver candidates the pool does not know (players with games this season who are on no roster).
+    `also_names` are players to look up besides the rosters (e.g. a free agent you want to evaluate): they get ESPN's line if the pool lacks them."""
     meta = json.loads((APP_DIR / "league_meta.json").read_text())
     pool = pd.read_csv(APP_DIR / "player_pool.csv").reset_index(drop=True)
     try:
@@ -105,7 +106,7 @@ def load_pool_and_meta(rostered_names=None, season=True, min_games=1, shrink=0.0
     stats, season_note = (season_stats.load(refresh=refresh) if (season or free_agents) else (None, None))
     if rostered_names:
         try:
-            pool, extra_inj, filled, missing = espn_extra.extend_pool(pool, list(rostered_names))
+            pool, extra_inj, filled, missing = espn_extra.extend_pool(pool, list(rostered_names) + list(also_names or []))
             inj = {**inj, **extra_inj}
         except Exception as e:                                   # no network and no cached ESPN list: carry on without
             print(f"(ESPN-Projektionen für Rookies/Neuzugänge nicht verfügbar: {type(e).__name__})")

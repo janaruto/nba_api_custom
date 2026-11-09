@@ -10,6 +10,9 @@ League tools: current rosters, rankings, trade ideas, offers and wish players
     python draft_app/league_tools.py want "Alperen Sengun" --give 2 --get 2   # ... as a 2-for-2 (the wish player + one more of his team); also 1-3 ranges,
                                                                               #     --keep "A;B" (never offer them), --skip "C" (do not ask for them), --top N
     python draft_app/league_tools.py waiver [--top 3] [--keep "A;B"]         # the best free players to pick up, and whom to drop for each
+    python draft_app/league_tools.py waiver --drop "A"                        # A has to go: who is the best free replacement?
+    python draft_app/league_tools.py waiver --add "B"                         # B is free and I want him: whom should I drop?
+    python draft_app/league_tools.py waiver --add "B" --drop "A"              # this one move: win chance before/after, and what would be better
     python draft_app/league_tools.py all                                      # refresh + rank + suggest
 
 Where the rosters come from (`refresh`, and automatically before rank / suggest / offer / want / all and the weekly lineup), in this order:
@@ -299,12 +302,12 @@ def refresh(args=None, brief: bool = False) -> dict:
 
 # ── the league model ─────────────────────────────────────────────────────────────────────────────────
 class League:
-    def __init__(self, season=True, min_games=1, shrink=0.0, refresh=False, free_agents=False):
+    def __init__(self, season=True, min_games=1, shrink=0.0, refresh=False, free_agents=False, also_names=None):
         if not ROSTERS_JSON.exists():
             wl.init_rosters()
         raw = json.loads(ROSTERS_JSON.read_text())
         # rookies/new signings: ESPN's projection; every player with games this season: this season's per-game averages
-        self.pool, self.meta = wl.load_pool_and_meta([n for ns in raw.values() for n in ns], season=season, min_games=min_games, shrink=shrink, refresh=refresh, free_agents=free_agents)
+        self.pool, self.meta = wl.load_pool_and_meta([n for ns in raw.values() for n in ns], season=season, min_games=min_games, shrink=shrink, refresh=refresh, free_agents=free_agents, also_names=also_names)
         self.espn_filled, self.espn_missing = self.pool.attrs.get("espn_filled", []), self.pool.attrs.get("espn_missing", [])
         self.rules = engine.Rules.from_meta(self.meta)
         self.model = engine.build_pool_model(self.pool, self.rules, self.meta["league_rates"])
@@ -493,6 +496,22 @@ class League:
             if len(picked) >= top:
                 break
         return picked, len(cands)
+
+    def rank_moves(self, adds, drops, exact_top=40):
+        """All 'add c, drop d' moves for the given candidates, screened with a cheap lineup approximation and evaluated exactly for the
+        best `exact_top` (respecting the 4-centre roster cap). Returns [(add, drop, result)] best first."""
+        me, m = self.you, self.model
+        roster = self.rosters[me]
+        ncen = int(m.isC[roster].sum())
+        scored = []
+        for c in adds:
+            for d in drops:
+                if ncen - int(m.isC[d]) + int(m.isC[c]) > self.rules.max_centers:
+                    continue
+                scored.append((self.win_pct(me, m.team_moments(self.quick_lineup(me, [d], [c]))) - self.base[me], c, d))
+        scored.sort(reverse=True)
+        out = [(c, d, self.add_drop(me, c, d)) for _, c, d in scored[:exact_top]]
+        return sorted(out, key=lambda x: -x[2]["d_me"])
 
     # -- standings
     def standings(self, sims=3000, seed=7):
@@ -778,27 +797,106 @@ def cmd_want(L: League, args):
     print(f"  Siegchance/Woche: du {100 * L.base[me]:.1f}% -> {100 * (L.base[me] + r['d_me']):.1f}%   ·   {x} {100 * L.base[x]:.1f}% -> {100 * (L.base[x] + r['d_x']):.1f}%")
 
 
+def matchup_view(L: League):
+    """This week's matchup for the waiver output: the win chance of the current best lineup and a function that gives it for any roster.
+    All players count with all games of their team (as in the weekly advisor). None if the schedule or the opponent is not available."""
+    try:
+        periods = json.loads(wl.SCHEDULE_JSON.read_text())["periods"]
+        per = wl.pick_week(periods, __import__("datetime").date.today())
+        opp = next((b if names.same_team(a, L.you) else a for a, b in per["matchups"] if names.same_team(a, L.you) or names.same_team(b, L.you)), None)
+        opp = L.find_team(opp)
+        tg = wl.games_per_team(wl.load_schedule(), per["start"], per["end"])
+        model, *_ = wl.week_model(L.pool, L.meta, tg)
+        field = wl.neutral_field(model, L.rosters)
+        opp_mom = model.team_moments(wl.best_lineup(model, L.rosters[opp], field)[0])
+        base = wl.best_lineup(model, L.rosters[L.you], opp_mom)[1]
+
+        def p_of(roster):
+            res = wl.best_lineup(model, roster, opp_mom)
+            return (None, []) if res is None else (res[1], res[0])
+        return dict(label=f"Woche {per['week']} gegen {opp}", base=base, p_of=p_of)
+    except Exception:
+        return None
+
+
+def show_move(L: League, k, c, d, r, mv=None, head="HOLEN"):
+    me, m, pool = L.you, L.model, L.pool
+    print(f"\n  [{k}] {head}:   {stat_line(L, c)}")
+    print(f"      DROPPEN: {stat_line(L, d)}")
+    print(f"      Deine Siegchance pro Woche {100 * L.base[me]:.1f}% -> {100 * (L.base[me] + r['d_me']):.1f}% ({100 * r['d_me']:+.1f} Pp) · Kategorien in Pp: {cat_delta_text(r['cat_me'], 4)}")
+    if mv is not None:
+        p2, lineup2 = mv["p_of"]([x for x in L.rosters[me] if x != d] + [c])
+        if p2 is not None:
+            print(f"      Dieses Matchup ({mv['label']}, alle Spiele): {100 * mv['base']:.1f}% -> {100 * p2:.1f}% ({100 * (p2 - mv['base']):+.1f} Pp)"
+                  f" · {m.names[c]} " + ("startet in dieser Woche" if c in lineup2 else "sitzt in dieser Woche auf der Bank"))
+    print(f"      In einer Durchschnittswoche: {m.names[c]} " + ("startet" if c in r["lineup"] else "sitzt auf der Bank")
+          + f"; {m.names[d]} " + ("war Starter" if d in L.lineups[me] else "war Bankspieler") + ".")
+    if "SEASON_GP" in pool and pool.SEASON_SRC.iat[c] != "Projektion" and int(pool.SEASON_GP.iat[c]) < 5:
+        print(f"      Achtung: {m.names[c]} hat erst {int(pool.SEASON_GP.iat[c])} Spiel(e) in dieser Saison, sein Schnitt ist unsicher (Gewinner einer kleinen Stichprobe sind oft Glück).")
+
+
 def cmd_waiver(L: League, args):
-    me = L.you
+    """Modes: no --add/--drop = the best pickups with a drop each; --drop X = the best player to add instead of X; --add Y = the best player to
+    drop for Y; both = this one move evaluated (and what would be better)."""
+    me, m = L.you, L.model
     keep = {L.find_player(p.strip()) for p in (args.keep or "").split(";") if p.strip()}
     if not keep <= set(L.rosters[me]):
         raise SystemExit("--keep: nur Spieler aus deinem Kader.")
-    picked, n = L.waiver(top=args.top, keep=keep)
+    add = L.find_player(args.add) if args.add else None
+    drop = L.find_player(args.drop) if args.drop else None
+    if drop is not None and drop not in L.rosters[me]:
+        raise SystemExit(f"--drop: {m.names[drop]} steht nicht in deinem Kader.")
+    if add is not None:
+        owner = L.owner(add)
+        if owner == me:
+            raise SystemExit(f"--add: {m.names[add]} gehört schon dir.")
+        if owner is not None:
+            raise SystemExit(f"--add: {m.names[add]} gehört {owner}, ist also nicht frei. Für einen Trade: ./draft_app/league.sh want \"{m.names[add]}\"")
+        if str(L.pool["INJURY_STATUS"].iat[add]) == "OUT":
+            print(f"Hinweis: {m.names[add]} steht bei ESPN auf OUT.")
     fa = L.pool.attrs.get("fa_added", [])
-    print(f"\n== Waiver: die {args.top} besten Zugänge von den freien Spielern ==")
-    print(f"Geprüft: {n} freie Spieler (ohne ESPN-OUT)" + (f", davon {len(fa)} nur aus den Saisonwerten (nicht im Modell-Pool)" if fa else "")
-          + " gegen jeden deiner Spieler als Drop" + (f" (geschützt: {', '.join(L.model.names[i] for i in keep)})" if keep else "")
-          + f". Siegchance pro Woche jetzt: {100 * L.base[me]:.1f}%.")
-    if not picked:
-        print("\nKein freier Spieler verbessert dein Team laut Modell. (Bei wenigen Saisonspielen ist das Bild noch unscharf: --shrink 10 probieren.)")
+    mv = matchup_view(L)
+    free = L.free_players()
+    my_drops = [d for d in L.rosters[me] if d not in keep]
+    print(f"\n== Waiver ==\nFreie Spieler geprüft: {len(free)} (ohne ESPN-OUT)" + (f", davon {len(fa)} nur aus den Saisonwerten (nicht im Modell-Pool)" if fa else "")
+          + f". Siegchance pro Woche jetzt: {100 * L.base[me]:.1f}%" + (f" · {mv['label']}: {100 * mv['base']:.1f}%" if mv else "") + ".")
+
+    if add is not None and drop is not None:                                   # one concrete move
+        if int(m.isC[L.rosters[me]].sum()) - int(m.isC[drop]) + int(m.isC[add]) > L.rules.max_centers:
+            raise SystemExit(f"Das würde dein Kader über {L.rules.max_centers} Center bringen: {m.names[add]} ersetzt nur einen Center ({m.names[drop]} ist keiner).")
+        r = L.add_drop(me, add, drop)
+        print(f"\n== Dein Wechsel: {m.names[drop]} raus, {m.names[add]} rein ==")
+        show_move(L, 1, add, drop, r, mv, head="HOLEN")
+        better_add = [x for x in L.rank_moves(free, [drop], exact_top=15) if x[0] != add][:1]
+        better_drop = [x for x in L.rank_moves([add], my_drops, exact_top=13) if x[1] != drop][:1]
+        print("\n  Zum Vergleich:")
+        for lab, lst in ((f"bester Ersatz für {m.names[drop]}", better_add), (f"bester Drop für {m.names[add]}", better_drop)):
+            if not lst:
+                print(f"    {lab}: nichts Passendes"); continue
+            c, d, rr = lst[0]
+            tag = "besser" if rr["d_me"] > r["d_me"] + 0.0005 else "nicht besser"
+            print(f"    {lab}: {m.names[c]} statt {m.names[d]} -> {100 * rr['d_me']:+.1f} Pp ({tag} als dein Wechsel mit {100 * r['d_me']:+.1f} Pp)")
         return
-    for k, (c, d, r) in enumerate(picked, 1):
-        starts = c in r["lineup"]
-        print(f"\n  [{k}] HOLEN:   {stat_line(L, c)}")
-        print(f"      DROPPEN: {stat_line(L, d)}")
-        print(f"      Deine Siegchance pro Woche {100 * L.base[me]:.1f}% -> {100 * (L.base[me] + r['d_me']):.1f}% ({100 * r['d_me']:+.1f} Pp) · Kategorien in Pp: {cat_delta_text(r['cat_me'], 4)}")
-        print(f"      {L.model.names[c]} " + ("würde in deiner Aufstellung starten" if starts else "säße zunächst auf der Bank") + f" · {L.model.names[d]} " + ("war Starter" if d in L.lineups[me] else "war Bankspieler") + ".")
-    print("\nDie Vorschläge nutzen verschiedene Drops und lassen sich zusammen ausführen (Wechselwirkungen sind nicht eingerechnet). Waiver-Gebote (FAAB) und die Reihenfolge der Waiver-Priorität kennt das Werkzeug nicht.")
+
+    if drop is not None:                                                         # who should replace him?
+        moves = L.rank_moves(free, [drop], exact_top=30)[:args.top]
+        print(f"\n== Wer soll für {m.names[drop]} kommen? Die {args.top} besten freien Spieler ==")
+    elif add is not None:                                                        # whom to drop for him?
+        moves = L.rank_moves([add], my_drops, exact_top=len(my_drops))[:args.top]
+        print(f"\n== Wen soll ich für {m.names[add]} droppen? Die {args.top} besten Optionen ==")
+    else:                                                                        # the best pickups, distinct drops
+        moves, n = L.waiver(top=args.top, keep=keep)
+        print(f"\n== Die {args.top} besten Zugänge von den freien Spielern (gegen jeden deiner Spieler als Drop"
+              + (f", geschützt: {', '.join(m.names[i] for i in keep)}" if keep else "") + ") ==")
+    if not moves:
+        print("\nKein Wechsel mit diesen Vorgaben (Center-Grenze?) oder keiner verbessert dein Team laut Modell. (Bei wenigen Saisonspielen ist das Bild noch unscharf: --shrink 10 probieren.)")
+        return
+    for k, (c, d, r) in enumerate(moves, 1):
+        show_move(L, k, c, d, r, mv)
+    if add is None and drop is None:
+        print("\nDie Vorschläge nutzen verschiedene Drops und lassen sich zusammen ausführen (Wechselwirkungen sind nicht eingerechnet). Waiver-Gebote (FAAB) und die Reihenfolge der Waiver-Priorität kennt das Werkzeug nicht.")
+    elif all(r["d_me"] <= 0 for *_, r in moves):
+        print("\nKeine dieser Möglichkeiten verbessert dein Team laut Modell.")
 
 
 def main() -> int:
@@ -815,6 +913,8 @@ def main() -> int:
     wv = sub.add_parser("waiver", parents=[common], help="die besten freien Spieler (Waiver) und wen du dafür droppen solltest")
     wv.add_argument("--top", type=int, default=3, help="Anzahl der Vorschläge (Standard 3)")
     wv.add_argument("--keep", help="eigene Spieler, die nie gedroppt werden, mit ; getrennt")
+    wv.add_argument("--drop", help="dieser Spieler aus deinem Kader soll gehen: wer ist der beste freie Ersatz?")
+    wv.add_argument("--add", help="dieser freie Spieler soll kommen: wen soll ich dafür droppen? (zusammen mit --drop wird genau dieser Wechsel bewertet)")
     o = sub.add_parser("offer", parents=[common]); o.add_argument("--team", required=True); o.add_argument("--asks", required=True, help='deine Spieler, nach denen gefragt wird, mit ; getrennt')
     w = sub.add_parser("want", parents=[common]); w.add_argument("player", help='Wunschspieler, mehrere vom selben Team mit ; getrennt')
     w.add_argument("--give", help="wie viele deiner Spieler im Trade (Zahl oder Bereich, 1-3; Standard 1-2)")
@@ -832,7 +932,8 @@ def main() -> int:
             refresh(args, brief=args.cmd != "all")
         except SystemExit as e:
             print(f"(Kader nicht aktualisiert: {e}) rechne mit dem letzten Stand in league_rosters.json")
-    L = League(season=not args.projection, min_games=args.min_games, shrink=args.shrink, free_agents=args.cmd == "waiver")
+    L = League(season=not args.projection, min_games=args.min_games, shrink=args.shrink, free_agents=args.cmd == "waiver",
+               also_names=[args.add] if args.cmd == "waiver" and args.add else None)
     print(wl.season_text(L.pool))
     if args.cmd in ("rank", "all"):
         cmd_rank(L)

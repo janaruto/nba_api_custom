@@ -2,6 +2,9 @@
 # Liga-Werkzeuge (die Kader werden vor jeder Auswertung live von ESPN geholt, sobald `login` einmal eingerichtet ist):
 #   ./draft_app/league.sh login                                 einmalig: ESPN-Zugang für den automatischen Kader-Abruf einrichten
 #   ./draft_app/league.sh waiver [--top 3] [--keep "A;B"]      die besten freien Spieler (Waiver) und wen du dafür droppen solltest
+#   ./draft_app/league.sh waiver --drop "A"                    A soll gehen: wer ist der beste freie Ersatz?
+#   ./draft_app/league.sh waiver --add "B"                     B will ich holen: wen soll ich droppen?
+#   ./draft_app/league.sh waiver --add "B" --drop "A"          genau dieser Wechsel: wie ändert sich die Gewinnchance?
 #   ./draft_app/league.sh all                                   Rosters aktualisieren + Rangliste + Trade-Ideen
 #   ./draft_app/league.sh refresh | rank | suggest
 #   ./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray"    jemand fragt nach deinem Spieler: was kannst du zurückverlangen?

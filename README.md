@@ -57,7 +57,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 105 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 110 Tests, ohne Netzwerk
 ./draft_app/league.sh login                             # ESPN-Zugang für den automatischen Kader-Abruf (Abschnitt 10.4)
 ```
 
@@ -105,7 +105,10 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 | `./draft_app/league.sh refresh [--file Datei] [--brief]` | Kader aller Teams aktualisieren und Trades/Adds/Drops seit dem letzten Lauf zeigen; `--file` liest nur diese gespeicherte Datei |
 | `./draft_app/league.sh rank` | Rangliste mit Siegchance pro Woche, erwarteten Siegen, Top-4- und Platz-1-Chance, gefährlichsten Gegnern |
 | `./draft_app/league.sh suggest` | Trade-Ideen für dich (Ein-gegen-Eins mit allen Teams): Win-Win und für den Manager faire |
-| `./draft_app/league.sh waiver [--top 3] [--keep "A;B"]` | **Waiver:** die drei besten freien Spieler (ohne Team in der Liga), jeweils mit dem Spieler aus deinem Kader, den du dafür droppen solltest; Siegchance vorher/nachher, Kategorien, ob der Neue startet; `--keep` schützt eigene Spieler vor dem Drop |
+| `./draft_app/league.sh waiver [--top 3] [--keep "A;B"]` | **Waiver:** die drei besten freien Spieler (ohne Team in der Liga), jeweils mit dem Spieler aus deinem Kader, den du dafür droppen solltest; Siegchance pro Woche und für das laufende Matchup vorher/nachher, Kategorien, ob der Neue startet; `--keep` schützt eigene Spieler vor dem Drop |
+| `./draft_app/league.sh waiver --drop "Kyle Filipowski"` | **Du bestimmst den Drop:** wer ist der beste freie Ersatz für ihn? (die besten `--top` mit Wirkung auf deine Gewinnchance) |
+| `./draft_app/league.sh waiver --add "Ja'Kobe Walter"` | **Du bestimmst den Zugang:** wen soll ich für ihn droppen? (alle deine Spieler als Drop, die besten zuerst) |
+| `./draft_app/league.sh waiver --add "Ja'Kobe Walter" --drop "Kyle Filipowski"` | **Dieser eine Wechsel:** Gewinnchance vorher/nachher (Durchschnittswoche und laufendes Matchup), Kategorien, wer startet, dazu zum Vergleich der bessere Ersatz für den Drop und der bessere Drop für den Zugang |
 | `./draft_app/league.sh all` | Kader aktualisieren, Rangliste und Trade-Ideen in einem Lauf |
 | `./draft_app/league.sh offer --team "Brick City" --asks "Jamal Murray[;Zweiter]"` | jemand fragt nach deinen Spielern: was kannst du zurückverlangen? |
 | `./draft_app/league.sh want "Evan Mobley"` | du willst einen Spieler: drei Optionen (beide profitieren, grösster Gewinn für dich, fair für den Manager) mit Stat-Veränderung und Nachrichtenentwurf |
@@ -117,7 +120,7 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 
 | Befehl | Wirkung |
 |---|---|
-| `.venv/bin/python -m pytest` | alle 105 Tests (kein Netzwerk) |
+| `.venv/bin/python -m pytest` | alle 110 Tests (kein Netzwerk) |
 
 Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ich), vor dem Matchup `./draft_app/weekly.sh` (beste Aufstellung), bei einem Tauschgedanken `--swap`, bei einem Angebot `offer`/`want`.
 
@@ -139,7 +142,7 @@ Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ic
 | `draft_app/season_stats.py` | Per-Spiel-Schnitte der laufenden Saison aus den Spielprotokollen (statt der Projektion); für Wochen-Aufstellung und alle Liga-Werkzeuge |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 105 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien, Saison-Schnitte |
+| `draft_app/tests/` | 110 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien, Saison-Schnitte |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -364,6 +367,9 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
 * **`waiver`:** die besten Zugänge von den **freien Spielern** (Pool-Spieler auf keinem Kader, ohne ESPN-OUT, dazu bis zu 60 Spieler mit Spielen in dieser Saison, die weder im Pool noch auf einem Kader stehen; ihre Zeile entsteht aus den Saisonwerten, den Streuungen wie bei den ESPN-Ersatzlinien und ESPNs Positionen).
   Für jeden Kandidaten und jeden deiner Spieler als Drop wird das neue Team gebildet (höchstens 4 Center im Kader, Aufstellung neu optimiert) und die Siegchance pro Woche verglichen: erst grob für alle Paare, dann genau für die 12 besten Kandidaten je Drop.
   Gezeigt werden die drei besten Paare, wobei jeder Drop und jeder Zugang nur einmal vorkommt, damit sich alle drei zusammen ausführen lassen (Wechselwirkungen der drei Wechsel sind nicht eingerechnet). Waiver-Gebote (FAAB) und Waiver-Reihenfolge kennt das Werkzeug nicht.
+  Du kannst Drop oder Zugang selbst festlegen: `--drop X` fragt „wer ist der beste freie Ersatz für X?“, `--add Y` fragt „wen droppe ich für Y?“ (alle Spieler deines Kaders als Drop), beides zusammen bewertet genau diesen Wechsel und nennt zum Vergleich den besseren Ersatz bzw. den besseren Drop.
+  Jeder Vorschlag zeigt neben der Siegchance einer Durchschnittswoche auch **das laufende Matchup** (Woche und Gegner aus dem Spielplan, alle Spiele jedes Spielers wie in 6.12) und ob der Neue in dieser Woche startet. Ist `--add` ein Spieler, der keinem Team gehört, der aber weder im Pool noch unter den ausgewerteten Saisonwerten steht, wird er über ESPNs Projektion ergänzt;
+  gehört er einem anderen Team, verweist das Werkzeug auf `want` (Trade). Ein Wechsel, der den Kader über vier Center brächte, wird abgelehnt. Spieler mit weniger als fünf Saisonspielen werden mit einer Warnung gezeigt: Wer nach wenigen Spielen oben steht, ist oft das Glück einer kleinen Stichprobe.
 
 **ESPN-Ersatzlinien für Spieler ohne NBA-Daten** (`espn_extra.py`). Rookies und Neuzugänge fehlen im Pool oder stehen dort nur als Platzhalter. Für sie gilt ESPNs eigene Projektion 2027:
 
@@ -530,6 +536,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E30 | 27. Okt. | Verletzungsspiele (deutlich weniger Minuten, danach das nächste Teamspiel verpasst, nur Rotationsspieler) zählen nicht zum Saison-Schnitt | Das Spiel mit der Verletzung zog den Schnitt von Duren herunter (4 Punkte in 10 Minuten statt 22 in 28), das Modell gab ihn zu oft in Trade-Vorschlägen ab | Heuristik: erkennt keine Verletzung im jüngsten Teamspiel und keine zu Ende gespielte (6.13) |
 | E31 | 27. Okt. | Neuer Befehl `waiver`: drei beste freie Spieler mit je einem Drop, jeder Drop und Zugang nur einmal; Kandidaten auch aus den Saisonwerten ausserhalb des Pools | Neue Namen mit guten Saisonwerten sind typische Waiver-Funde und stehen nicht im Vorsaison-Pool; ohne verschiedene Drops liessen sich die Vorschläge nicht zusammen ausführen | FAAB-Gebote und Waiver-Reihenfolge unbekannt; bei wenigen Spielen verrauscht |
 | E32 | 9. Nov. | Teamnamen: Umbenennungen werden über ESPNs Team-Kennung verfolgt (`league_teams.json`), jeder frühere Name führt zum selben Team; Rosterschlüssel sind immer ESPNs aktueller Name; der eigene Teamname heisst jetzt „Janaruto Ninjas“ (Notebook, Meta-Datei, README) | Drei Teams hiessen inzwischen anders als in `league_meta.json` und im Spielplan, eine feste Alias-Liste im Code war nach der zweiten Umbenennung schon veraltet | Eine Umbenennung, die das Register nie sah, geht per `team_aliases` in `local_config.json` |
+| E33 | 9. Nov. | `waiver --drop/--add`: Drop oder Zugang selbst festlegen oder genau einen Wechsel bewerten; Ausgabe auch für das laufende Matchup | Man hat meist schon einen Spieler im Kopf, den man loswerden oder holen will; das Matchup der Woche ist für einen Waiver-Zug oft wichtiger als die Durchschnittswoche | Matchup-Teil entfällt ohne Spielplan; Warnung bei weniger als 5 Saisonspielen |
 
 ---
 
@@ -605,7 +612,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 105 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 110 Tests):
 
 | Datei | Prüft |
 |---|---|
