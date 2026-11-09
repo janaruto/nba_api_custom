@@ -49,7 +49,6 @@ SCHEDULE_CACHE = ROOT / "cache" / f"schedule_{SEASON}.json"
 ROSTERS_JSON = APP_DIR / "league_rosters.json"
 SCHEDULE_JSON = APP_DIR / "league_schedule.json"      # {"periods": [{"week":1,"start":"..","end":"..","matchups":[[A,B],..]}]}
 NEUTRAL_GAMES = 3.45                                   # used for players whose team is unknown
-TEAM_ALIASES = {"Unsupervised Chaos": "Team 15"}      # ESPN renamed the team after the draft; league_rosters.json keeps the draft-log name
 
 
 # ── schedule ─────────────────────────────────────────────────────────────────────────────────────────
@@ -349,19 +348,14 @@ def run(args) -> int:
         label = f"Woche {args.week}"
         if not opponent:
             for a, b in per["matchups"]:
-                if a == you: opponent = b
-                if b == you: opponent = a
+                if names.same_team(a, you): opponent = b
+                if names.same_team(b, you): opponent = a
     if not opponent:
         print("Gegner fehlt: --opponent \"Teamname\" oder --week N mit league_schedule.json"); return 2
-    def _key(name):                                      # ESPN's current name or the draft-log name of the same team
+    def _key(name):                                      # the roster key of a team, also for a name it had earlier (renamed in ESPN)
         if name in rosters_names:
             return name
-        for a, b in TEAM_ALIASES.items():
-            if name == a and b in rosters_names:
-                return b
-            if name == b and a in rosters_names:
-                return a
-        return name
+        return next((k for k in rosters_names if names.same_team(k, name)), name)
     opponent = _key(opponent) if opponent else opponent
     you = _key(you)
     if opponent not in rosters_names or you not in rosters_names:

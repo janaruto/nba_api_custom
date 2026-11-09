@@ -28,18 +28,23 @@ def test_parse_uses_name_or_location_and_nickname():
 def paths(tmp_path, monkeypatch):
     monkeypatch.setattr(lt, "ROSTERS_JSON", tmp_path / "league_rosters.json")
     monkeypatch.setattr(lt, "ROSTERS_PREV", tmp_path / "league_rosters_prev.json")
+    monkeypatch.setattr(lt.names, "TEAMS_FILE", tmp_path / "league_teams.json")             # never touch the real team registry
+    monkeypatch.setattr(lt.names, "LOCAL_FILE", tmp_path / "local_config_names.json")
+    monkeypatch.setattr(lt, "draft_team_names", lambda: None)
     return tmp_path
 
 
-def test_refresh_reports_trades_adds_drops_and_keeps_the_old_team_key(paths, capsys):
+def test_refresh_reports_trades_adds_drops_and_follows_a_renamed_team(paths, capsys):
     old = {"Team 15": ["P1", "P2"], "Other": ["P3", "P4"]}
     lt.ROSTERS_JSON.write_text(json.dumps(old))
-    (paths / "espn.json").write_text(json.dumps(espn({"Unsupervised Chaos": ["P1", "P3", "New Guy"], "Other": ["P2"]})))
+    lt.names.TEAMS_FILE.write_text(json.dumps({"1": {"name": "Team 15", "aliases": []}, "2": {"name": "Other", "aliases": []}}))   # the registry knows both teams by id
+    (paths / "espn.json").write_text(json.dumps(espn({"Unsupervised Chaos": ["P1", "P3", "New Guy"], "Other": ["P2"]})))           # team id 1 is now called differently
     new = lt.refresh(types.SimpleNamespace(file=str(paths / "espn.json")))
     out = capsys.readouterr().out
-    assert "P3: Other -> Team 15" in out and "P2: Team 15 -> Other" in out        # the two moves are trades
-    assert "+ New Guy (Team 15)" in out and "- P4 (Other)" in out
-    assert "Team 15" in new and "Unsupervised Chaos" not in new                  # legacy key kept so older tools keep working
+    assert "Teamname geändert: Team 15 -> Unsupervised Chaos" in out
+    assert "P3: Other -> Unsupervised Chaos" in out and "P2: Unsupervised Chaos -> Other" in out        # the two moves are trades (not "everybody moved")
+    assert "+ New Guy (Unsupervised Chaos)" in out and "- P4 (Other)" in out
+    assert "Unsupervised Chaos" in new and "Team 15" not in new                                          # rosters carry ESPN's current name
     assert json.loads(lt.ROSTERS_PREV.read_text()) == old
 
 
@@ -291,6 +296,9 @@ def small_league(tmp_path, monkeypatch):
     monkeypatch.setattr(lt, "ROSTERS_JSON", tmp_path / "rosters.json")
     lt.ROSTERS_JSON.write_text(json.dumps(rosters))
     monkeypatch.setattr(lt, "APP_DIR", tmp_path)
+    monkeypatch.setattr(lt.names, "TEAMS_FILE", tmp_path / "league_teams.json")
+    monkeypatch.setattr(lt.names, "LOCAL_FILE", tmp_path / "local_config_names.json")
+    lt.names.TEAMS_FILE.write_text(json.dumps({"1": {"name": "A", "aliases": ["Old A"]}}))                # team A was called "Old A" earlier
     return lt.League(free_agents=True), pool
 
 
@@ -315,3 +323,10 @@ def test_waiver_respects_keep_and_the_centre_cap(small_league):
     cen = int(m.isC[roster].sum())
     for c, d, r in picked:                                                          # never more than 4 centres on the roster after the move
         assert cen - int(m.isC[d]) + int(m.isC[c]) <= L.rules.max_centers
+
+
+def test_a_team_is_found_under_any_name_it_ever_had(small_league):
+    L, _ = small_league
+    assert L.find_team("A") == "A" and L.find_team("Old A") == "A" and L.find_team("old a") == "A"      # exact, earlier name, spelling
+    with pytest.raises(SystemExit):
+        L.find_team("Somebody Else")

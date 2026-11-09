@@ -50,7 +50,6 @@ ROSTERS_PREV = APP_DIR / "league_rosters_prev.json"
 LEAGUE_JSON = APP_DIR / "espn_league.json"
 AUTH_JSON = APP_DIR / "espn_auth.json"
 LOCAL_JSON = APP_DIR / "local_config.json"
-ALIASES = {"Unsupervised Chaos": "Team 15"}                 # same team: ESPN renamed it after the draft
 FAIR_TOL = 3                                                # a trade looks fair to the manager if he gets at least (value given away) - $3
 MAX_EXACT = 1200                                            # trades evaluated exactly (lineups re-optimised); larger searches are pre-filtered
 CATN = engine.CATS
@@ -68,10 +67,16 @@ def parse_espn_league(j: dict) -> dict:
     """{team name: [player full names]} from ESPN's league JSON (views mRoster + mTeam)."""
     out = {}
     for t in j.get("teams", []):
-        name = (t.get("name") or f"{t.get('location', '')} {t.get('nickname', '')}".strip() or f"Team {t.get('id')}").strip()
-        out[name] = [e["playerPoolEntry"]["player"]["fullName"] for e in (t.get("roster") or {}).get("entries", [])
-                     if e.get("playerPoolEntry", {}).get("player", {}).get("fullName")]
+        out[names.espn_team_name(t)] = [e["playerPoolEntry"]["player"]["fullName"] for e in (t.get("roster") or {}).get("entries", [])
+                                        if e.get("playerPoolEntry", {}).get("player", {}).get("fullName")]
     return out
+
+
+def draft_team_names():
+    try:
+        return json.loads((APP_DIR / "league_meta.json").read_text()).get("team_names")
+    except (OSError, ValueError):
+        return None
 
 
 def _ssl():
@@ -254,11 +259,10 @@ def refresh(args=None, brief: bool = False) -> dict:
     old = json.loads(ROSTERS_JSON.read_text()) if ROSTERS_JSON.exists() else {}
     if old:
         ROSTERS_PREV.write_text(json.dumps(old, indent=1, ensure_ascii=False))
-    # keep the previous key of a renamed team so older tools keep working
-    for k_new in list(new):
-        if ALIASES.get(k_new) in old and k_new not in old:
-            new[ALIASES[k_new]] = new.pop(k_new)
     ROSTERS_JSON.write_text(json.dumps(new, indent=1, ensure_ascii=False))
+    for old_name, new_name in names.update_team_registry(j.get("teams", []), seed_names=draft_team_names()):       # follow renames by ESPN's team id
+        print(f"Teamname geändert: {old_name} -> {new_name}")
+    aliases = names.team_aliases()
     live = src.startswith("live")
     print(f"Kader: {src} · {len(new)} Teams, {sum(len(v) for v in new.values())} Spieler" + ("" if brief else " -> league_rosters.json"))
     counted = {(t.get("name") or t.get("nickname") or f"Team {t.get('id')}").strip(): int((t.get("transactionCounter") or {}).get("trades") or 0)
@@ -270,8 +274,9 @@ def refresh(args=None, brief: bool = False) -> dict:
         print(f"ACHTUNG: Die gespeicherte Datei ist {fmt_age(time.time() - saved_at)} alt; ein Trade danach wäre nicht enthalten. Einmal `./draft_app/league.sh login` einrichten, dann holt das Werkzeug die Kader selbst.\n"
               f"  (Von Hand: diese Adresse im eingeloggten Chrome öffnen und mit Cmd+S als draft_app/espn_league.json speichern: {league_url()})")
     if old:
-        where_old = {names.name_key(p): t for t, ps in old.items() for p in ps}
-        where_new = {names.name_key(p): (t, p) for t, ps in new.items() for p in ps}
+        canon = lambda t: names.canonical_team(t, aliases)                  # a renamed team is still the same team
+        where_old = {names.name_key(p): canon(t) for t, ps in old.items() for p in ps}
+        where_new = {names.name_key(p): (canon(t), p) for t, ps in new.items() for p in ps}
         moves = [(p, where_old[k], t) for k, (t, p) in where_new.items() if k in where_old and where_old[k] != t]
         adds = [(p, t) for k, (t, p) in where_new.items() if k not in where_old]
         drops = [(p, where_old[k]) for k in where_old if k not in where_new for p in [next((x for ps in old.values() for x in ps if names.name_key(x) == k), k)]]
@@ -330,10 +335,13 @@ class League:
 
     # -- helpers
     def find_team(self, name: str) -> str:
-        cand = [name, ALIASES.get(name, ""), *[k for k, v in ALIASES.items() if v == name]]
-        for c in cand:
-            if c in self.keys:
-                return c
+        """The roster key for a team name, also for a name the team had earlier (ESPN lets managers rename their team)."""
+        if name in self.keys:
+            return name
+        aliases = names.team_aliases()
+        for k in self.keys:
+            if names.same_team(k, name, aliases):
+                return k
         low = {names.name_key(k): k for k in self.keys}
         hit = low.get(names.name_key(name))
         if hit:

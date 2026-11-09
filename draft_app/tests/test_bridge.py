@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bridge  # noqa: E402
 import names  # noqa: E402
 
-TEAMS = ["Brick City", "Janartuo Ninjas", "Switchler to the moon", "Noah's Nasty Team", "Team 15"]
+TEAMS = ["Brick City", "Janaruto Ninjas", "Switchler to the moon", "Noah's Nasty Team", "Team 15"]
 POOL = [(203999, "Nikola Jokić"), (1641705, "Victor Wembanyama"), (1630162, "Jaren Jackson Jr."), (7, "Alex Sarr"), (8, "Alex Sarr")]
 
 
@@ -64,9 +64,9 @@ def test_nomination_then_sale_clears_it(br):
     br.handle({"type": "nominated", "player": "Victor Wembanyama", "bid": 12, "team": "Brick City"})
     nom = json.loads(br.nom_json.read_text())
     assert nom["player_id"] == 1641705 and nom["bid"] == 12 and nom["team"] == "Brick City"
-    br.handle({"type": "nominated", "player": "Victor Wembanyama", "bid": "$13", "team": "Janartuo Ninjas"})
+    br.handle({"type": "nominated", "player": "Victor Wembanyama", "bid": "$13", "team": "Janaruto Ninjas"})
     assert json.loads(br.nom_json.read_text())["bid"] == 13
-    br.handle({"type": "sold", "player": "Victor Wembanyama", "team": "Janartuo Ninjas", "price": 13})
+    br.handle({"type": "sold", "player": "Victor Wembanyama", "team": "Janaruto Ninjas", "price": 13})
     assert not br.nom_json.exists()
 
 

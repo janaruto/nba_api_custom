@@ -57,7 +57,7 @@ Voraussetzung: Python ≥ 3.10. Auf Apple Silicon eine native Umgebung nehmen (e
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[fantasy,dev]"     # nba_api (aus src/), streamlit, certifi, pytest, nbconvert, ipykernel
-.venv/bin/python -m pytest                              # 99 Tests, ohne Netzwerk
+.venv/bin/python -m pytest                              # 105 Tests, ohne Netzwerk
 ./draft_app/league.sh login                             # ESPN-Zugang für den automatischen Kader-Abruf (Abschnitt 10.4)
 ```
 
@@ -117,7 +117,7 @@ Alle Wrapper (`*.sh`) nehmen die Umgebung `.venv` und laufen aus jedem Ordner. E
 
 | Befehl | Wirkung |
 |---|---|
-| `.venv/bin/python -m pytest` | alle 99 Tests (kein Netzwerk) |
+| `.venv/bin/python -m pytest` | alle 105 Tests (kein Netzwerk) |
 
 Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ich), vor dem Matchup `./draft_app/weekly.sh` (beste Aufstellung), bei einem Tauschgedanken `--swap`, bei einem Angebot `offer`/`want`.
 
@@ -133,13 +133,13 @@ Typische Woche: `./draft_app/league.sh all` (was hat sich geändert, wo stehe ic
 | `draft_app/app.py` | Streamlit-Oberfläche für den Draft-Abend |
 | `draft_app/bridge.py`, `espn_bridge.user.js` | Lokaler Empfänger und Tampermonkey-Userscript, das den ESPN-Draft-Room mitliest |
 | `draft_app/availability.py`, `refresh_injuries.py` | ESPN-Verletzungsstatus holen und in erwartete Spiele übersetzen |
-| `draft_app/names.py` | Namensabgleich ESPN ↔ Pool (akzentfrei, ohne Suffixe) |
+| `draft_app/names.py` | Namensabgleich ESPN ↔ Pool (akzentfrei, ohne Suffixe); Team-Register: verfolgt umbenannte Teams über ESPNs Team-Kennung |
 | `draft_app/weekly_lineup.py`, `weekly.sh` | Wochen-Aufstellung: Spielplan, Spielzahlen je Team, beste legale Zehn |
 | `draft_app/league_tools.py`, `league.sh` | Kader aller Teams aktualisieren, Rangliste mit Siegchancen, Trade-Vorschläge, Angebote, Wunschspieler |
 | `draft_app/season_stats.py` | Per-Spiel-Schnitte der laufenden Saison aus den Spielprotokollen (statt der Projektion); für Wochen-Aufstellung und alle Liga-Werkzeuge |
 | `draft_app/espn_extra.py` | ESPNs eigene Projektion für Spieler ohne NBA-Daten (Rookies, Neuzugänge) |
 | `draft_app/start_draft_night.sh` | Startet Empfänger und App |
-| `draft_app/tests/` | 99 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien, Saison-Schnitte |
+| `draft_app/tests/` | 105 Tests: Engine, Endspiel, Bank, Verfügbarkeit, Bridge, Wochen-Aufstellung, Liga-Werkzeuge, ESPN-Ersatzlinien, Saison-Schnitte |
 | `src/nba_api/` | Datenclient (Upstream swar/nba_api, wird editierbar installiert) |
 | `pyproject.toml` | Paket-Metadaten und Extras (`fantasy`, `dev`) |
 
@@ -345,7 +345,8 @@ sind Bankspieler meist gleichzeitig gefragt). Das ist eine Rangfolge erster Ordn
 
 **Liga-Werkzeuge** (`league_tools.py`).
 
-* **Kader aktualisieren (`refresh`).** Holt ESPNs Liga-JSON live (oder liest die gespeicherte Datei), schreibt `league_rosters.json`, behält den alten Schlüssel eines umbenannten Teams („Unsupervised Chaos“ ↔ „Team 15“), meldet Trades, Neuverpflichtungen und Entlassungen seit dem letzten Stand.
+* **Kader aktualisieren (`refresh`).** Holt ESPNs Liga-JSON live (oder liest die gespeicherte Datei), schreibt `league_rosters.json` mit den aktuellen ESPN-Teamnamen und meldet Trades, Neuverpflichtungen und Entlassungen seit dem letzten Stand.
+  **Umbenannte Teams** (ESPN erlaubt das jederzeit) erkennt das Werkzeug über ESPNs Team-Kennung: `league_teams.json` (lokal, von git ignoriert) hält je Team den aktuellen und alle früheren Namen, beim ersten Lauf aus der Namensliste der Draft-Zeit gefüllt. Jeder frühere Name führt zum selben Team (`--team "Inaugural Champs"` findet „Repeating Champs“; der Spielplan mit alten Namen passt weiter), und ein Teamwechsel-Vergleich zählt eine Umbenennung nicht als Wechsel aller Spieler. Eine Umbenennung, die das Register nie gesehen hat, lässt sich in `local_config.json` unter `"team_aliases": {"alter Name": "neuer Name"}` nachtragen.
 * **Aufstellungen der Teams.** Jedes Team spielt im Modell seine beste Zehner-Aufstellung: Start mit der z-Summe der erwarteten Wochenbeiträge, danach dreimal abwechselnd Feld neu berechnen und je Team per Hügelklettern (Starter gegen Bankspieler, legal) verbessern.
 * **Rangliste.** Siegchance pro Woche = Mittel von `P(Matchup)` gegen jedes andere Team (6.5/6.6, ohne `τ`). Die Saison wird 3'000-mal simuliert: 18 Wochen mit zufälligen Paarungen (nicht dem echten Spielplan), Ergebnis je Paarung aus der Matchup-Wahrscheinlichkeit;
   daraus erwartete Siege, Top-4-Chance und Chance auf Platz 1. Das ist ein *Zustand-heute*-Modell mit durchschnittlichen Wochen; Verletzungen und Spielzahlen einzelner Wochen kommen nicht vor.
@@ -466,7 +467,7 @@ Holmgren 69 % (\$9.7), Harden 69 % (\$36.5), Towns 63 % (\$50), Fox 56 % (\$4), 
 
 ### 7.6 Saison-Simulation
 
-Eine umkämpfte Auktion, danach 18-Wochen-Saisons für alle 14 Kader: Janartuo Ninjas 15.4–2.6 (10.–90. Perzentil 14–4 bis 17–1, Playoffs 98 %), nächstbester Kader 12.3–5.7.
+Eine umkämpfte Auktion, danach 18-Wochen-Saisons für alle 14 Kader: Janaruto Ninjas 15.4–2.6 (10.–90. Perzentil 14–4 bis 17–1, Playoffs 98 %), nächstbester Kader 12.3–5.7.
 **Das ist ein Wert für „Projektionen stimmen und der Raum verhält sich wie die simulierten Bots“, keine Prognose.**
 
 ### 7.7 ESPN gegen Modell
@@ -481,7 +482,7 @@ Rangliste mit den Kadern vom 18. Oktober (ESPN-Linien für Rookies eingerechnet;
 
 | # | Team | Siegchance/Woche | Top 4 |
 |---|---|---|---|
-| 1 | **Janartuo Ninjas (du)** | 74 % | 90 % |
+| 1 | **Janaruto Ninjas (du)** | 74 % | 90 % |
 | 2 | Inaugural Champs | 65 % | 69 % |
 | 3 | Brick City | 59 % | 51 % |
 | 4 | Undersized Problems | 57 % | 42 % |
@@ -528,6 +529,7 @@ Das ist die Momentaufnahme des Modells, nicht die Prognose der Saison.
 | E29 | 26. Okt. | Per-Spiel-Werte aus den Schnitten der laufenden Saison (reiner Schnitt als Standard) für die Wochen-Aufstellung **und alle Liga-Werkzeuge**; Projektion nur für Spieler ohne Spiel; `--shrink`, `--min-games`, `--projection` als Schalter | Nach Saisonstart zählt, was die Spieler tun; der Wunsch war ausdrücklich der aktuelle Schnitt, auch für die ganze Liga | Nach 3 Spielen sehr verrauscht (6.13): Siegchance Woche 2 zwischen 23 % und 66 %, je nach Schalter; `--shrink 10` ist vorsichtiger |
 | E30 | 27. Okt. | Verletzungsspiele (deutlich weniger Minuten, danach das nächste Teamspiel verpasst, nur Rotationsspieler) zählen nicht zum Saison-Schnitt | Das Spiel mit der Verletzung zog den Schnitt von Duren herunter (4 Punkte in 10 Minuten statt 22 in 28), das Modell gab ihn zu oft in Trade-Vorschlägen ab | Heuristik: erkennt keine Verletzung im jüngsten Teamspiel und keine zu Ende gespielte (6.13) |
 | E31 | 27. Okt. | Neuer Befehl `waiver`: drei beste freie Spieler mit je einem Drop, jeder Drop und Zugang nur einmal; Kandidaten auch aus den Saisonwerten ausserhalb des Pools | Neue Namen mit guten Saisonwerten sind typische Waiver-Funde und stehen nicht im Vorsaison-Pool; ohne verschiedene Drops liessen sich die Vorschläge nicht zusammen ausführen | FAAB-Gebote und Waiver-Reihenfolge unbekannt; bei wenigen Spielen verrauscht |
+| E32 | 9. Nov. | Teamnamen: Umbenennungen werden über ESPNs Team-Kennung verfolgt (`league_teams.json`), jeder frühere Name führt zum selben Team; Rosterschlüssel sind immer ESPNs aktueller Name; der eigene Teamname heisst jetzt „Janaruto Ninjas“ (Notebook, Meta-Datei, README) | Drei Teams hiessen inzwischen anders als in `league_meta.json` und im Spielplan, eine feste Alias-Liste im Code war nach der zweiten Umbenennung schon veraltet | Eine Umbenennung, die das Register nie sah, geht per `team_aliases` in `local_config.json` |
 
 ---
 
@@ -603,7 +605,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 
 ## 11. Tests
 
-`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 99 Tests):
+`.venv/bin/python -m pytest` (Konfiguration in `pyproject.toml`, kein Netzwerk nötig, 105 Tests):
 
 | Datei | Prüft |
 |---|---|
@@ -613,6 +615,7 @@ Cookie-Dateien hält es nie für Liga-Daten.
 | `test_availability.py` | Verletzungs-Overlay und Überschreibungen |
 | `test_bridge.py` | Namens- und Team-Zuordnung, Ereignisverarbeitung, Token, Doppelverkäufe |
 | `test_weekly.py` | Spielplan, Spielzahlen je Team, beste legale Aufstellung (auch mit Vorgaben „spielt“/„sitzt“), Wahl der Matchup-Woche, Was-wäre-wenn-Tausch, Team-Aliase |
+| `test_team_names.py` | Team-Register: Befüllen aus der Namensliste der Draft-Zeit, Umbenennungen über die Kennung, Ketten von Umbenennungen, Gross-/Kleinschreibung, manuelle Zuordnungen |
 | `test_league_tools.py` | ESPN-JSON lesen, Trades/Neuverpflichtungen/Entlassungen, falsch benannte Dateien, Cookie-Dateien werden nie als Liga-Daten genommen; `want`: Grössenangaben, Kandidaten, die drei Optionen, Wegfall wirkungsloser Zugaben; `waiver` mit einer kleinen synthetischen Liga (verschiedene Drops, Center-Grenze, `--keep`) |
 | `test_espn_extra.py` | ESPN-Ersatzlinien: fehlende Spieler, Platzhalter, fehlende Projektion, kein Netzwerk wenn nichts zu tun ist, DD-Reihenfolge, ID-Kollisionen; Waiver-Kandidaten aus den Saisonwerten |
 | `test_season_stats.py` | Saison-Schnitte: Aggregation, Double-Double-Rate, Ersetzen der Projektion, `--min-games`/`--shrink`, Zuordnung ohne ID-Verwechslung, Zwischenspeicher, Verletzungsspiele (auch Blowout, Randspieler, jüngstes Teamspiel) |
